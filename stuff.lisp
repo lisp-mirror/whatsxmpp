@@ -1,10 +1,13 @@
 (defpackage :whatsxmpp
-  (:use :cl :usocket :event-emitter))
+  (:use :cl :usocket :event-emitter :blackbird :blackbird-base))
 (in-package :whatsxmpp)
 
 (defvar *last-stanza*)
 (defparameter +streams-ns+ "urn:ietf:params:xml:ns:xmpp-streams")
+(defparameter +stanzas-ns+ "urn:ietf:params:xml:ns:xmpp-stanzas")
 (defparameter +component-ns+ "jabber:component:accept")
+(defparameter +disco-info-ns+ "http://jabber.org/protocol/disco#info")
+(defparameter +disco-items-ns+ "http://jabber.org/protocol/disco#items")
 
 (defclass xmpp-component (event-emitter)
   ((socket
@@ -27,14 +30,14 @@
     :accessor component-stream-id)
    (shared-secret
     :initarg :shared-secret
-    :reader component-shared-secret)))
+    :reader component-shared-secret)
+   (promises
+    :initform (make-hash-table :test 'equal)
+    :accessor component-promises)))
 
-(defmacro with-component-data-lock (comp &body body)
+(defmacro with-component-data-lock ((comp) &body body)
   `(bt:with-recursive-lock-held ((component-data-lock ,comp))
      ,@body))
-
-(defmethod sax:start-document ((s start-ignoring-sink))
-  (declare (ignore s)))
 
 (defclass xmpp-source (cxml:broadcast-handler)
   ((component
@@ -64,7 +67,7 @@
           (when (not stream-id-attr)
             (error "Server didn't send a stream ID"))
           (format *debug-io* "~&XMPP --> [stream started, ID ~A]~%" (sax:attribute-value stream-id-attr))
-          (with-component-data-lock comp
+          (with-component-data-lock (comp)
             (setf (component-stream-id comp) (sax:attribute-value stream-id-attr))
             (emit :stream-started comp))
           (return-from sax:start-element))))
@@ -152,28 +155,126 @@
         (cxml:parse fucking-stream source
                     :recode t)))
 
-(defmacro with-component-xml-output (comp &rest body)
-  `(with-accessors ((lock component-socket-lock) (socket component-socket) (sink component-sink))
-       ,comp
-     (bt:with-recursive-lock-held (lock)
-       (cxml:with-xml-output sink
-         ,@body)
-       (force-output socket))))
+(defmacro with-component-xml-output ((comp) &body body)
+  (let ((ret-sym (gensym)))
+    `(with-accessors ((lock component-socket-lock) (socket component-socket) (sink component-sink))
+         ,comp
+       (with-component-data-lock (,comp)
+         (bt:with-recursive-lock-held (lock)
+           (let ((,ret-sym nil))
+             (cxml:with-xml-output sink
+               (setf ,ret-sym ,@body))
+             (force-output socket)
+             ,ret-sym))))))
 
 (defun write-stream-header (comp)
-  (with-component-data-lock comp
-    (with-component-xml-output comp
-      (cxml:with-namespace ("stream" "http://etherx.jabber.org/streams")
-        (cxml:with-element "stream:stream"
-          (cxml:attribute "xmlns" +component-ns+)
-          (cxml:attribute "to" (component-name comp)))))))
+  (with-component-xml-output (comp)
+    (cxml:with-namespace ("stream" "http://etherx.jabber.org/streams")
+      (cxml:with-element "stream:stream"
+        (cxml:attribute "xmlns" +component-ns+)
+        (cxml:attribute "to" (component-name comp))))))
 
 (defun component-stream-started (comp)
-  (with-component-data-lock comp
-    (with-component-xml-output comp
-      (cxml:with-element "handshake"
-        (cxml:attribute "xmlns" +component-ns+)
-        (cxml:text (string-downcase (sha1:sha1-hex (concatenate 'string (component-stream-id comp) (component-shared-secret comp)))))))))
+  (with-component-xml-output (comp)
+    (cxml:with-element "handshake"
+      (cxml:attribute "xmlns" +component-ns+)
+      (cxml:text (string-downcase (sha1:sha1-hex (concatenate 'string (component-stream-id comp) (component-shared-secret comp))))))))
+
+(defun make-message-uuid (comp)
+  (with-accessors ((promises component-promises)) comp
+    (let ((uuid (string-downcase (write-to-string (uuid:make-v4-uuid))))
+          (promise (make-promise)))
+      (setf (gethash uuid promises) promise)
+      (values uuid promise))))
+
+(defmacro with-stanza ((comp stanza-name &key type from to) &body body)
+  (alexandria:with-gensyms (uuid ret from-sym)
+    `(with-component-xml-output (,comp)
+       (let ((,from-sym (or ,from (component-name ,comp))))
+         (multiple-value-bind (,uuid ,ret)
+             (make-message-uuid ,comp)
+           (cxml:with-element ,stanza-name
+             (cxml:attribute "from" ,from-sym)
+             (cxml:attribute "id" ,uuid)
+             ,(when to
+                `(cxml:attribute "to" ,to))
+             ,(when type
+                `(cxml:attribute "type" ,type))
+             ,@body)
+           ,ret)))))
+
+(defmacro with-iq ((comp to &key (type "get") from) &body body)
+  "Send an IQ stanza (of type TYPE) on the COMP component, from the JID FROM (default: component name) to the JID TO, with BODY specifying further CXML commands to make up the body of the stanza. Returns a promise."
+  `(with-stanza (,comp "iq"
+                 :type ,type
+                 :to ,to
+                 :from ,from)
+     ,@body))
+
+(defmacro with-message ((comp to &key (type "chat") from) &body body)
+  "Send a message stanza (of type TYPE) on the COMP component. Semantics the same as WITH-IQ, except for the fact that message stanzas don't normally prompt a response."
+  `(with-stanza (,comp "message"
+                 :type ,type
+                 :to ,to
+                 :from ,from)
+     ,@body))
+
+(defmacro with-presence ((comp to &key type from) &body body)
+  "Send a presence stanza (of type TYPE) on the COMP component. Semantics the same as WITH-IQ, except for the fact that presence stanzas don't normally prompt a response."
+  `(with-stanza (,comp "presence"
+                 :type ,type
+                 :to ,to
+                 :from ,from)
+     ,@body))
+
+(defun get-node-named (nodes name)
+  "Finds the node with tag name NAME in NODES, returning NIL if none was found."
+  (flet ((is-the-node (node) (equal (dom:tag-name node) name)))
+    (find-if #'is-the-node nodes)))
+
+(defun get-disco-info (comp to &optional from)
+  "Send an XEP-0030 disco#info request. Returns a promise that resolves with a list of supported features."
+  (attach
+   (with-iq (comp to :from from)
+     (cxml:with-element "query"
+       (cxml:attribute "xmlns" +disco-info-ns+)))
+   (lambda (results)
+     (let ((query-node (get-node-named results "query"))
+           (features '()))
+       (unless query-node
+         (error "Malformed disco#info response: no <query/>"))
+       (loop
+         for node across (dom:child-nodes query-node)
+         do (let ((name (dom:tag-name node)))
+              (when (equal name "feature")
+                (setf features (cons (dom:get-attribute node "var") features)))))
+       features))))
+
+(defun get-disco-items (comp to &optional from)
+  "Send an XEP-0030 disco#items request. Returns a promise that resolves with an alist, mapping JIDs to names."
+  (attach
+   (with-iq (comp to :from from)
+     (cxml:with-element "query"
+       (cxml:attribute "xmlns" +disco-items-ns+)))
+   (lambda (results)
+     (let ((query-node (get-node-named results "query"))
+           (items '()))
+       (unless query-node
+         (error "Malformed disco#items response: no <query/>"))
+       (loop
+         for node across (dom:child-nodes query-node)
+         do (let ((name (dom:tag-name node)))
+              (when (equal name "item")
+                (setf items (cons
+                             (cons (dom:get-attribute node "jid") (dom:get-attribute node "name"))
+                             items)))))
+       items))))
+
+(defun send-text-message (comp to-jid text &optional from)
+  "Send a simple text message to TO-JID, containing TEXT."
+  (with-message (comp to-jid :from from)
+    (cxml:with-element "body"
+      (cxml:text text))))
 
 (defun handle-stream-error (comp stanza)
   (flet ((is-error-node (node)
@@ -189,9 +290,69 @@
       (warn "Stream error of type ~A encountered: ~A" error-name error-text)
       (emit :stream-error comp error-name error-text stanza))))
 
+(define-condition stanza-error (error)
+  ((defined-condition
+       :initarg :defined-condition
+       :accessor stanza-error-condition)
+   (type
+    :initarg :type
+    :accessor stanza-error-type)
+   (text
+    :initarg :text
+    :initform nil
+    :accessor stanza-error-text)
+   (raw
+    :initarg :raw
+    :accessor stanza-error-raw))
+  (:report (lambda (err stream)
+             (with-slots (defined-condition type text) err
+               (format stream "~A (type ~A): ~A" defined-condition type text)))))
+
+(defun extract-stanza-error (stanza)
+  "Extracts a STANZA-ERROR from the given STANZA, which must contain an <error/> element conforming to RFC 6120 § 8.3."
+  (flet ((is-error-condition-node (node)
+           (equal (dom:namespace-uri node) +stanzas-ns+))
+         (is-error-node (node)
+           (equal (dom:tag-name node) "error"))
+         (is-text-node (node)
+           (and (equal (dom:namespace-uri node) +stanzas-ns+) (equal (dom:tag-name node) "text"))))
+    (let* ((error-node (find-if #'is-error-node (dom:child-nodes stanza)))
+           (error-children (dom:child-nodes error-node))
+           (type (dom:get-attribute error-node "type"))
+           (condition-node (find-if #'is-error-condition-node error-children))
+           (condition-name (dom:tag-name condition-node))
+           (text-node (find-if #'is-text-node error-children))
+           (text (when text-node
+                   (dom:node-value (elt (dom:child-nodes text-node) 0)))))
+      (make-condition 'stanza-error
+                      :raw error-node
+                      :defined-condition condition-name
+                      :type type
+                      :text text))))
+
 (defun handle-connection-complete (comp)
   (declare (ignore comp))
   (format *debug-io* "Connection complete! \o/"))
+
+(defun handle-iq-response (comp stanza)
+  "Handles an IQ response STANZA for component COMP."
+  (with-component-data-lock (comp)
+    (let ((type (dom:get-attribute stanza "type"))
+          (id (dom:get-attribute stanza "id"))
+          (from (dom:get-attribute stanza "from")))
+      (if (equal type "get")
+          (emit :iq-get comp id from stanza)
+          (symbol-macrolet
+              ((promise (gethash id (component-promises comp))))
+            (if promise
+                (progn
+                  (format t "~&IQ ~A from ~A for ~A~%" type from id)
+                  (cond
+                    ((equal type "result") (finish promise (dom:child-nodes stanza)))
+                    ((equal type "error") (signal-error promise (extract-stanza-error stanza)))
+                    (t (warn "Invalid IQ stanza type: ~A" type)))
+                  (setf promise nil))
+                (warn "Unsolicited IQ stanza from ~A of type ~A, ID ~A" from type id)))))))
 
 (defun component-stanza (comp stanza)
   (setf *last-stanza* stanza)
@@ -200,6 +361,7 @@
     (cond
       ((equal tag-name "stream:error") (handle-stream-error comp stanza))
       ((equal tag-name "handshake") (handle-connection-complete comp))
+      ((equal tag-name "iq") (handle-iq-response comp stanza))
       (t (emit :stanza comp stanza)))))
 
 (defun make-component (server port shared-secret name)
