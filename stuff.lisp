@@ -1,5 +1,3 @@
-(defpackage :whatsxmpp
-  (:use :cl :usocket :event-emitter :blackbird :blackbird-base))
 (in-package :whatsxmpp)
 
 (defvar *last-stanza*)
@@ -8,6 +6,9 @@
 (defparameter +component-ns+ "jabber:component:accept")
 (defparameter +disco-info-ns+ "http://jabber.org/protocol/disco#info")
 (defparameter +disco-items-ns+ "http://jabber.org/protocol/disco#items")
+(defparameter +muc-ns+ "http://jabber.org/protocol/muc")
+(defparameter +file-upload-ns+ "urn:xmpp:http:upload:0")
+(defparameter +vcard-temp-ns+ "vcard-temp")
 
 (defclass xmpp-component (event-emitter)
   ((socket
@@ -31,6 +32,9 @@
    (shared-secret
     :initarg :shared-secret
     :reader component-shared-secret)
+   (handlers
+    :initform (make-hash-table)
+    :accessor component-handlers)
    (promises
     :initform (make-hash-table :test 'equal)
     :accessor component-promises)))
@@ -270,6 +274,36 @@
                              items)))))
        items))))
 
+(defun request-http-upload-slot (comp service-jid filename size mime-type)
+  "Requests an XEP-0363 HTTP Upload slot from the service at SERVICE-JID, aiming to upload the file with FILENAME, SIZE (in bytes) and MIME-TYPE. Returns a promise that resolves with a list of the form ((PUT-URL . ((HEADER-NAME . HEADER-VALUE) ...)) GET-URL)."
+  (declare (type xmpp-component comp) (type string service-jid filename mime-type) (type integer size))
+  (attach
+   (with-iq (comp service-jid)
+     (cxml:with-element "request"
+       (cxml:attribute "xmlns" +file-upload-ns+)
+       (cxml:attribute "filename" filename)
+       (cxml:attribute "size" (write-to-string size))
+       (cxml:attribute "content-type" mime-type)))
+   (lambda (results)
+     (let ((slot-node (get-node-named results "slot")))
+       (unless slot-node
+         (error "Malformed XEP-0363 response: no <slot/>"))
+       (let* ((children (dom:child-nodes slot-node))
+              (put-node (get-node-named children "put"))
+              (get-node (get-node-named children "get"))
+              (headers '()))
+         (unless (and put-node get-node)
+           (error "Malformed XEP-0363 response: PUT or GET nodes missing"))
+         (loop
+           for node across (dom:child-nodes put-node)
+           do (let ((name (dom:tag-name node)))
+                (when (equal name "header")
+                  (setf headers (cons
+                                 (cons (dom:get-attribute node "name")
+                                       (dom:node-value (elt (dom:child-nodes node) 0)))
+                                 headers)))))
+         `((,(dom:get-attribute put-node "url") . ,headers) ,(dom:get-attribute get-node "url")))))))
+
 (defun send-text-message (comp to-jid text &optional from)
   "Send a simple text message to TO-JID, containing TEXT."
   (with-message (comp to-jid :from from)
@@ -303,6 +337,7 @@
     :accessor stanza-error-text)
    (raw
     :initarg :raw
+    :initform nil
     :accessor stanza-error-raw))
   (:report (lambda (err stream)
              (with-slots (defined-condition type text) err
@@ -334,6 +369,112 @@
   (declare (ignore comp))
   (format *debug-io* "Connection complete! \o/"))
 
+(defun send-iq-error (comp id to from e)
+  "Send E (a STANZA-ERROR) as an IQ error response."
+  (with-component-xml-output (comp)
+    (cxml:with-element "iq"
+      (cxml:attribute "type" "error")
+      (cxml:attribute "id" id)
+      (cxml:attribute "from" to)
+      (cxml:attribute "to" from)
+      (cxml:with-element "error"
+        (cxml:attribute "type" (stanza-error-type e))
+        (cxml:with-element (stanza-error-condition e)
+          (cxml:attribute "xmlns" +stanzas-ns+))
+        (when (stanza-error-text e)
+          (cxml:with-element "text"
+            (cxml:text (stanza-error-text e))))))))
+
+(defmacro disco-identity (name type category)
+  `(cxml:with-element "identity"
+     (cxml:attribute "name" ,name)
+     (cxml:attribute "type" ,type)
+     (cxml:attribute "category" ,category)))
+
+(defmacro disco-feature (feature)
+  `(cxml:with-element "feature"
+     (cxml:attribute "var" ,feature)))
+
+(defun disco-info-handler (comp &key to &allow-other-keys)
+  "Handles XEP-0030 disco#info requests."
+  (format *debug-io* "~&disco#info: ~A~%" to)
+  (with-component-data-lock (comp)
+    `((cxml:with-element "query"
+        (cxml:attribute "xmlns" ,+disco-info-ns+)
+        (disco-feature +disco-info-ns+)
+        ,@(cond
+            ((equal to (component-name comp))
+             `((disco-identity "whatsxmpp bridge" "xmpp" "gateway")
+               (disco-feature ,+muc-ns+)))
+            (t nil))))))
+
+(defun disco-items-handler (comp &key to &allow-other-keys)
+  "Handles XEP-0030 disco#items requests."
+  (format *debug-io* "~&disco#items: ~A~%" to)
+  (with-component-data-lock (comp)
+    `((cxml:with-element "query"
+        (cxml:attribute "xmlns" ,+disco-info-ns+)))))
+
+(defun register-component-iq-handler (comp handler-name func)
+  "Register FUNC to be called for the HANDLER-NAME IQ handler on COMP."
+  (with-component-data-lock (comp)
+    (setf (gethash handler-name (component-handlers comp)) func)))
+
+(defun call-component-iq-handler (comp handler &rest args)
+  "Calls the IQ handler identified by the symbol HANDLER on COMP, with the provided ARGS."
+  (destructuring-bind (&key id to from &allow-other-keys) args
+    (with-component-data-lock (comp)
+      (catcher
+       (attach
+        (let ((func (gethash handler (component-handlers comp))))
+          (unless func
+            (error 'stanza-error
+                   :defined-condition "feature-not-implemented"
+                   :text (format nil "No handler for ~A registered" handler)
+                   :type "cancel"))
+          (let ((result (apply func comp args)))
+            result))
+        (lambda (result-forms)
+          (eval `(with-component-xml-output (,comp)
+                   (cxml:with-element "iq"
+                     (cxml:attribute "type" "result")
+                     (cxml:attribute "id" ,id)
+                     (cxml:attribute "from" ,to)
+                     (cxml:attribute "to" ,from)
+                     ,@result-forms)))))
+       (stanza-error (e) (send-iq-error comp id to from e))
+       (t (e)
+          (send-iq-error comp id to from
+                         (make-condition 'stanza-error
+                                         :defined-condition "internal-server-error"
+                                         :text (write-to-string e)
+                                         :type "cancel"))
+          (with-simple-restart
+              (continue "Continue execution.")
+            (invoke-debugger e)))))))
+
+(defun handle-iq-get (comp id from stanza)
+  "Handles an IQ-get STANZA for component COMP."
+  (let* ((first-child (elt (dom:child-nodes stanza) 0))
+         (tag-name (dom:tag-name first-child))
+         (to (dom:get-attribute stanza "to"))
+         (xmlns (dom:get-attribute first-child "xmlns"))
+         (handler-type
+           (cond
+             ((and (equal xmlns +disco-info-ns+) (equal tag-name "query"))
+              :disco-info)
+             ((and (equal xmlns +disco-items-ns+) (equal tag-name "query"))
+              :disco-items)
+             ((and (equal xmlns +vcard-temp-ns+) (equal tag-name "vCard"))
+              :vcard-temp-get)
+             (t
+              :generic-iq))))
+    (call-component-iq-handler comp handler-type
+                               :to to
+                               :id id
+                               :from from
+                               :stanza stanza)))
+
 (defun handle-iq-response (comp stanza)
   "Handles an IQ response STANZA for component COMP."
   (with-component-data-lock (comp)
@@ -341,7 +482,7 @@
           (id (dom:get-attribute stanza "id"))
           (from (dom:get-attribute stanza "from")))
       (if (equal type "get")
-          (emit :iq-get comp id from stanza)
+          (handle-iq-get comp id from stanza)
           (symbol-macrolet
               ((promise (gethash id (component-promises comp))))
             (if promise
@@ -354,7 +495,34 @@
                   (setf promise nil))
                 (warn "Unsolicited IQ stanza from ~A of type ~A, ID ~A" from type id)))))))
 
+(defun handle-presence (comp stanza)
+  "Handles a presence STANZA for component COMP."
+  (let* ((type (dom:get-attribute stanza "type"))
+         (from (dom:get-attribute stanza "from"))
+         (to (dom:get-attribute stanza "to"))
+         (event-name
+           (cond
+             ((equal type "subscribe") :presence-subscribe)
+             ((equal type "probe") :presence-probe)
+             ((equal type "unavailable") :presence-unavailable)
+             (t :presence))))
+    (emit event-name comp :from from :to to :stanza stanza)))
+
+(defun handle-message (comp stanza)
+  "Handles a message STANZA for component COMP."
+  (let* ((from (dom:get-attribute stanza "from"))
+         (to (dom:get-attribute stanza "to"))
+         (body (get-node-named (dom:child-nodes stanza) "body")))
+    (if body
+        (let* ((child-nodes (dom:child-nodes body))
+               (text (if (> (length child-nodes) 0)
+                         (dom:node-value (elt child-nodes 0))
+                         "")))
+          (emit :text-message comp :from from :to to :body text :stanza stanza))
+        (emit :message comp :from from :to to :stanza stanza))))
+
 (defun component-stanza (comp stanza)
+  "Handles a STANZA received by component COMP."
   (setf *last-stanza* stanza)
   (let* ((stanza (dom:document-element stanza))
          (tag-name (dom:tag-name stanza)))
@@ -362,6 +530,8 @@
       ((equal tag-name "stream:error") (handle-stream-error comp stanza))
       ((equal tag-name "handshake") (handle-connection-complete comp))
       ((equal tag-name "iq") (handle-iq-response comp stanza))
+      ((equal tag-name "presence") (handle-presence comp stanza))
+      ((equal tag-name "message") (handle-message comp stanza))
       (t (emit :stanza comp stanza)))))
 
 (defun make-component (server port shared-secret name)
