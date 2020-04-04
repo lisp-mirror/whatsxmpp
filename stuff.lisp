@@ -9,6 +9,8 @@
 (defparameter +muc-ns+ "http://jabber.org/protocol/muc")
 (defparameter +file-upload-ns+ "urn:xmpp:http:upload:0")
 (defparameter +oob-ns+ "jabber:x:oob")
+(defparameter +chat-markers-ns+ "urn:xmpp:chat-markers:0")
+(defparameter +delivery-delay-ns+ "urn:xmpp:delay")
 (defparameter +vcard-temp-ns+ "vcard-temp")
 
 (defclass xmpp-component (event-emitter)
@@ -208,12 +210,15 @@
       (setf (gethash uuid promises) promise)
       (values uuid promise))))
 
-(defmacro with-stanza ((comp stanza-name &key type from to) &body body)
-  (alexandria:with-gensyms (uuid ret from-sym)
+(defmacro with-stanza ((comp stanza-name &key type from to id) &body body)
+  (alexandria:with-gensyms (uuid ret from-sym id-sym)
     `(with-component-xml-output (,comp)
-       (let ((,from-sym (or ,from (component-name ,comp))))
+       (let ((,from-sym (or ,from (component-name ,comp)))
+             (,id-sym ,id))
          (multiple-value-bind (,uuid ,ret)
-             (make-message-uuid ,comp)
+             (if ,id-sym
+                 (values ,id-sym ,id-sym)
+                 (make-message-uuid ,comp))
            (cxml:with-element ,stanza-name
              (cxml:attribute "from" ,from-sym)
              (cxml:attribute "id" ,uuid)
@@ -224,20 +229,22 @@
              ,@body)
            ,ret)))))
 
-(defmacro with-iq ((comp to &key (type "get") from) &body body)
+(defmacro with-iq ((comp to &key (type "get") from id) &body body)
   "Send an IQ stanza (of type TYPE) on the COMP component, from the JID FROM (default: component name) to the JID TO, with BODY specifying further CXML commands to make up the body of the stanza. Returns a promise."
   `(with-stanza (,comp "iq"
                  :type ,type
                  :to ,to
-                 :from ,from)
+                 :from ,from
+                 :id ,id)
      ,@body))
 
-(defmacro with-message ((comp to &key (type "chat") from) &body body)
+(defmacro with-message ((comp to &key (type "chat") from id) &body body)
   "Send a message stanza (of type TYPE) on the COMP component. Semantics the same as WITH-IQ, except for the fact that message stanzas don't normally prompt a response."
   `(with-stanza (,comp "message"
                  :type ,type
                  :to ,to
-                 :from ,from)
+                 :from ,from
+                 :id ,id)
      ,@body))
 
 (defmacro with-presence ((comp to &key type from) &body body)
@@ -623,6 +630,7 @@ Commands:
 - register: set up the bridge
 - connect: manually connect to WhatsApp
 - stop: disconnect from WhatsApp, and disable automatic reconnections
+- status: get your current status
 - help: view this help text")
 
 (defun admin-msg (comp jid text)
@@ -684,11 +692,40 @@ Commands:
           (admin-msg comp jid (format nil "Failed to upload QR code!~%Report the following error to the bridge admin: `~A`" e))
           (invoke-debugger e))))))
 
+(defparameter *user-jid-scanner*
+  (cl-ppcre:create-scanner "u([0-9]+)"))
+
+(defparameter *group-jid-scanner*
+  (cl-ppcre:create-scanner "g([0-9]+)-([0-9]+)"))
+
+(defun wa-jid-to-whatsxmpp-localpart (waj)
+  "Convert a whatscl JID object to a WhatsXMPP localpart."
+  (with-accessors ((localpart whatscl::jid-localpart) (hostname whatscl::jid-hostname)) waj
+    (cond
+      ((or (equal hostname "s.whatsapp.net") (equal hostname "c.us"))
+       (concatenate 'string "u" localpart))
+      ((equal hostname "g.us")
+       (concatenate 'string "g" localpart))
+      (t
+       (concatenate 'string "other-" localpart "-" hostname)))))
+
+(defun whatsxmpp-localpart-to-wa-jid (localpart)
+  "Parses a WhatsXMPP localpart, returning a whatscl JID object if parsing is successful.
+WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
+  (cl-ppcre:register-groups-bind (digits)
+      (*user-jid-scanner* localpart)
+    (return-from whatsxmpp-localpart-to-wa-jid
+      (whatscl::make-jid digits "s.whatsapp.net")))
+  (cl-ppcre:register-groups-bind (creator ts)
+      (*group-jid-scanner* localpart)
+    (return-from whatsxmpp-localpart-to-wa-jid
+      (whatscl::make-jid (concatenate 'string creator "-" ts) "g.us"))))
+
 (defun wa-conn-recent-p (comp conn jid)
   (let ((current (gethash jid (component-whatsapps comp))))
     (eql current conn)))
 
-(defmacro with-wa-handler-context ((comp conn jid) &rest body)
+(defmacro with-wa-handler-context ((comp conn jid) &body body)
   "Takes the component data lock, checks that CONN is the most up-to-date connection for JID, and then executes BODY."
   `(with-component-data-lock (,comp)
      (if (wa-conn-recent-p ,comp ,conn ,jid)
@@ -761,6 +798,36 @@ Commands:
     (admin-msg comp jid "(Disabling automatic reconnections.)")
     (remhash jid (component-whatsapps comp))))
 
+(defun wa-handle-message (comp conn jid msg delivery-type)
+  (with-wa-handler-context (comp conn jid)
+    (let* ((key (whatscl::message-key msg))
+           (wa-id (whatscl::message-id msg))
+           (contents (whatscl::message-contents msg))
+           (wa-ts (whatscl::message-ts msg))
+           (xmpp-id (concatenate 'string
+                                 "wa-" wa-id "-" (write-to-string wa-ts)))
+           (local-time:*default-timezone* local-time:+utc-zone+)
+           (ts (local-time:unix-to-timestamp wa-ts)))
+      (format *debug-io* "~&message ~A for ~A with key ~A (type ~A)~%"
+              wa-id jid key delivery-type)
+      (when (eql delivery-type :relay) ; i.e. realtime
+        (when (typep key 'whatscl::message-key-receiving) ; ignore group and self messages
+          (when (typep contents 'whatscl::message-contents-text)
+            (let ((text (whatscl::contents-text contents))
+                  (from (concatenate 'string
+                                     (wa-jid-to-whatsxmpp-localpart (whatscl::key-jid key))
+                                     "@"
+                                     (component-name comp)
+                                     "/whatsapp")))
+              (with-message (comp jid :from from :id xmpp-id)
+                (cxml:with-element "body"
+                  (cxml:text text))
+                (cxml:with-element "delay"
+                  (cxml:attribute "xmlns" +delivery-delay-ns+)
+                  (cxml:attribute "stamp" (local-time:format-timestring nil ts)))
+                (cxml:with-element "markable"
+                  (cxml:attribute "xmlns" +chat-markers-ns+))))))))))
+
 (defun bind-wa-handlers (comp conn jid)
   (on :ws-open conn (lambda () (wa-handle-ws-open comp conn jid)))
   (on :ws-close conn (lambda (&rest args)
@@ -770,6 +837,7 @@ Commands:
   (on :error conn (lambda (e) (wa-handle-error comp conn jid e)))
   (on :error-status-code conn (lambda (e) (wa-handle-error-status-code comp conn jid e)))
   (on :qrcode conn (lambda (text) (wa-handle-ws-qrcode comp conn jid text)))
+  (on :message conn (lambda (msg dt) (wa-handle-message comp conn jid msg dt)))
   (on :connected conn (lambda (waj) (wa-handle-ws-connected comp conn jid waj))))
 
 (defun handle-setup-user (comp jid)
@@ -829,6 +897,17 @@ Commands:
          (reply *admin-help-text*))
         ((not uid)
          (reply "You're not registered with this bridge. Try `register` or `help`."))
+        ((equal body "status")
+         (multiple-value-bind (conn exists-p)
+             (gethash stripped (component-whatsapps comp))
+           (reply
+            (cond
+              ((and conn (whatscl::wac-jid conn))
+               (format nil "Connected and logged in as ~A."
+                       (whatscl::wac-jid conn)))
+              (conn "Connected, but not logged in.")
+              (exists-p "Temporarily disconnected.")
+              (t "Disconnected (automatic reconnections disabled).")))))
         ((equal body "connect")
          (handle-setup-user comp stripped))
         ((equal body "stop")
@@ -852,22 +931,37 @@ Commands:
       (with-prepared-statement
           (get-user "SELECT id FROM users WHERE jid = ?")
         (let ((stripped (strip-resource from)))
-          (bind-parameters get-user stripped))
-        (let ((uid (when (sqlite:step-statement get-user)
-                     (first (column-values get-user)))))
-          (cond
-            ((equal to-localpart "admin")
-             (handle-admin-command comp from body uid))
-            ((not uid)
-             (send-stanza-error comp
-                                :stanza-type "message"
-                                :id id :to from :from to
-                                :e (make-condition 'stanza-error
-                                                   :defined-condition "registration-required"
-                                                   :text "You must register to use this bridge."
-                                                   :type "auth")))
-            (t
-             (warn "Messages are unimplemented!"))))))))
+          (bind-parameters get-user stripped)
+          (let ((uid (when (sqlite:step-statement get-user)
+                       (first (column-values get-user))))
+                (conn (gethash stripped (component-whatsapps comp)))
+                (wa-jid (whatsxmpp-localpart-to-wa-jid to-localpart)))
+            (labels
+                ((send-error (e)
+                   (send-stanza-error comp
+                                      :stanza-type "message"
+                                      :id id :to from :from to
+                                      :e e)))
+              (cond
+                ((equal to-localpart "admin")
+                 (handle-admin-command comp from body uid))
+                ((not uid)
+                 (send-error (make-condition 'stanza-error
+                                             :defined-condition "registration-required"
+                                             :text "You must register to use this bridge."
+                                             :type "auth")))
+                ((not wa-jid)
+                 (send-error (make-condition 'stanza-error
+                                             :defined-condition "item-not-found"
+                                             :text "That user's JID isn't in a recognizable format."
+                                             :type "modify")))
+                ((not conn)
+                 (send-error (make-condition 'stanza-error
+                                             :defined-condition "recipient-unavailable"
+                                             :text "You're currently not connected to WhatsApp."
+                                             :type "wait")))
+                (t
+                 (whatscl::send-simple-text-message conn wa-jid body))))))))))
 
 (defun whatsxmpp-init ()
   "Initialise the whatsxmpp bridge."
