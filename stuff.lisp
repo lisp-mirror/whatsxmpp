@@ -12,6 +12,8 @@
 (defparameter +chat-markers-ns+ "urn:xmpp:chat-markers:0")
 (defparameter +delivery-delay-ns+ "urn:xmpp:delay")
 (defparameter +vcard-temp-ns+ "vcard-temp")
+(defparameter +nick-ns+ "http://jabber.org/protocol/nick")
+(defparameter +roster-exchange-ns+ "http://jabber.org/protocol/rosterx")
 
 (defclass xmpp-component (event-emitter)
   ((socket
@@ -596,10 +598,6 @@
     `((cxml:with-element "query"
         (cxml:attribute "xmlns" ,+disco-info-ns+)))))
 
-(defun register-whatsxmpp-handlers (comp)
-  (register-component-iq-handler comp :disco-info #'disco-info-handler)
-  (register-component-iq-handler comp :disco-items #'disco-items-handler))
-
 (defun parse-jid (jid)
   "Parse JID, returning the multiple values HOSTNAME, LOCALPART and RESOURCE."
   (declare (type string jid))
@@ -649,6 +647,17 @@ Commands:
 (defun admin-msg (comp jid text)
   "Send an admin message from the admin on COMP to JID."
   (send-text-message comp jid text (admin-jid comp)))
+
+(defun admin-presence (comp jid status &optional show)
+  "Send presence from the admin on COMP to JID."
+  (with-presence (comp jid
+                  :from (admin-jid comp))
+    (when show
+      (cxml:with-element "show"
+        (cxml:text show))
+      (cxml:with-element "status"
+        (cxml:text status)))))
+
 
 (defun wa-resetup-users (comp)
   "Go through the list of WhatsApp users and reconnect those whose connections have dropped."
@@ -753,6 +762,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
     (format *debug-io* "~&ws-error ~A: ~A~%" jid err)
     (admin-msg comp jid
                (format nil "WhatsApp websocket error: ~A" err))
+    (admin-presence comp jid "WebSocket error" "away")
     (setf (gethash jid (component-whatsapps comp)) nil)))
 
 (defun wa-handle-ws-close (comp conn jid)
@@ -760,17 +770,20 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
     (format *debug-io* "~&ws-close: ~A~%" jid)
     (admin-msg comp jid
                "WhatsApp websocket closed (will reconnect soon).")
+    (admin-presence comp jid "WebSocket closed" "away")
     (setf (gethash jid (component-whatsapps comp)) nil)))
 
 (defun wa-handle-ws-open (comp conn jid)
   (with-wa-handler-context (comp conn jid)
     (format *debug-io* "~&ws-open: ~A~%" jid)
+    (admin-presence comp jid "Connected" "away")
     (admin-msg comp jid
                "WhatsApp websocket connected.")))
 
 (defun wa-handle-ws-qrcode (comp conn jid qrcode)
   (with-wa-handler-context (comp conn jid)
     (format *debug-io* "~&qrcode: ~A~%" jid)
+    (admin-presence comp jid "Waiting for QR code" "away")
     (send-qrcode comp jid qrcode)))
 
 (defun update-session-data (jid sessdata)
@@ -782,11 +795,12 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
 
 (defun wa-handle-ws-connected (comp conn jid wa-jid)
   (with-wa-handler-context (comp conn jid)
-    (let ((sessdata (whatscl::serialize-persistent-session (whatscl::wac-session conn))))
-      (update-session-data jid sessdata))
-    (admin-msg comp jid
-               (format nil "Logged in to WhatsApp as ~A." wa-jid))
-    (format *debug-io* "~&ws-connected: ~A~%" jid)))
+    (let ((sessdata (whatscl::serialize-persistent-session (whatscl::wac-session conn)))
+          (status (format nil "Logged in to WhatsApp as ~A." wa-jid)))
+      (update-session-data jid sessdata)
+      (admin-msg comp jid status)
+      (admin-presence comp jid status)
+      (format *debug-io* "~&ws-connected: ~A~%" jid))))
 
 (defun wa-handle-error-status-code (comp conn jid err)
   (with-wa-handler-context (comp conn jid)
@@ -796,13 +810,17 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
         ((equal status-code 401)
          (progn
            (admin-msg comp jid "Error: The WhatsApp Web connection was removed from your device! You'll need to scan the QR code again.")
+           (admin-presence comp jid "Connection removed" "xa")
            (update-session-data jid "")))
         ((equal status-code 403)
          (progn
            (admin-msg comp jid "Error: WhatsApp Web denied access. You may have violated the Terms of Service.")
+           (admin-presence comp jid "Access denied" "xa")
            (update-session-data jid "")))
         (t
-         (admin-msg comp jid (format nil "Login failure: ~A" err)))))
+         (progn
+           (admin-presence comp jid "Login failure" "xa")
+           (admin-msg comp jid (format nil "Login failure: ~A" err))))))
     (admin-msg comp jid "(Disabling automatic reconnections.)")
     (remhash jid (component-whatsapps comp))))
 
@@ -812,6 +830,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
     (admin-msg comp jid
                (format nil "A programming error has been detected and your connection has been aborted unexpectedly.~%Report the following error to the bridge admin: ~A" err))
     (admin-msg comp jid "(Disabling automatic reconnections.)")
+    (admin-presence comp jid "Programming error" "xa")
     (remhash jid (component-whatsapps comp))))
 
 (defun wa-handle-message (comp conn jid msg delivery-type)
@@ -844,6 +863,88 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                 (cxml:with-element "markable"
                   (cxml:attribute "xmlns" +chat-markers-ns+))))))))))
 
+(defun wa-handle-message-ack (comp conn jid &key id ack from to ts)
+  (with-wa-handler-context (comp conn jid)
+
+    ))
+
+(defun get-user-id (jid)
+  "Get the user ID of JID, or NIL if none exists."
+  (with-prepared-statement
+      (get-user "SELECT id FROM users WHERE jid = ?")
+    (let ((stripped (strip-resource jid)))
+      (bind-parameters get-user stripped)
+      (when (sqlite:step-statement get-user)
+        (first (column-values get-user))))))
+
+(defun get-contact-name (uid localpart)
+  "Get a name for LOCALPART, a possible contact for the user with ID UID."
+  (with-prepared-statements
+      ((get-stmt "SELECT name, notify FROM user_contacts WHERE user_id = ? AND wa_jid = ?"))
+    (bind-parameters get-stmt uid localpart)
+    (when (sqlite:step-statement get-stmt)
+      (with-bound-columns (name notify) get-stmt
+        (or name notify (substitute #\+ #\u localpart))))))
+
+(defun handle-wa-contact-presence (comp jid localpart)
+  "Check if we need to send out presence subscriptions for LOCALPART."
+  (let ((uid (get-user-id jid)))
+    (assert uid () "No user ID for ~A!" jid)
+    (with-prepared-statements
+        ((get-stmt "SELECT subscription_state, name, notify, id FROM user_contacts WHERE user_id = ? AND wa_jid = ?")
+         (update-stmt "UPDATE user_contacts SET subscription_state = ? WHERE id = ?"))
+      (bind-parameters get-stmt uid localpart)
+      (unless (sqlite:step-statement get-stmt)
+        (error "No contact with localpart ~A exists!" localpart))
+      (with-bound-columns (subscription-state name notify ctid) get-stmt
+        (when (equal subscription-state "none")
+          (let ((name-to-use (or name
+                                 (when notify (concatenate 'string "~" notify))
+                                 (substitute #\+ #\u localpart)))
+                (from (concatenate 'string localpart "@" (component-name comp))))
+            (with-presence (comp jid
+                            :type "subscribe"
+                            :from from)
+              (cxml:with-element "status"
+                (cxml:text (format nil "I'm ~A from your WhatsApp contacts! (via whatsxmpp)" name-to-use)))
+              (cxml:with-element "nick"
+                (cxml:attribute "xmlns" +nick-ns+)
+                (cxml:text name-to-use)))
+            (bind-parameters update-stmt "asked" ctid)
+            (sqlite:step-statement update-stmt)))))))
+
+(defun add-wa-contact (comp jid contact)
+  "Adds the WHATSCL:CONTACT to the list of JID's contacts, or updates it if it already exists."
+  (with-accessors ((ct-jid whatscl::contact-jid)
+                   (ct-notify whatscl::contact-notify)
+                   (ct-name whatscl::contact-name))
+      contact
+    (let ((uid (get-user-id jid))
+          (wx-localpart (wa-jid-to-whatsxmpp-localpart ct-jid)))
+      (assert uid () "No user ID for ~A!" jid)
+      (with-prepared-statements
+          ((get-stmt "SELECT id, name, notify FROM user_contacts WHERE user_id = ? AND wa_jid = ?")
+           (update-stmt "UPDATE user_contacts SET name = ?, notify = ? WHERE id = ?")
+           (insert-stmt "INSERT INTO user_contacts (user_id, wa_jid, name, notify) VALUES (?, ?, ?, ?)"))
+        (bind-parameters get-stmt uid wx-localpart)
+        (if (sqlite:step-statement get-stmt)
+            (with-bound-columns (id name notify) get-stmt
+              (let ((notify (or ct-notify notify))
+                    (name (or ct-name name)))
+                (bind-parameters update-stmt name notify id)
+                (sqlite:step-statement update-stmt)))
+            (progn
+              (bind-parameters insert-stmt uid wx-localpart ct-name ct-notify)
+              (sqlite:step-statement insert-stmt)))
+        (handle-wa-contact-presence comp jid wx-localpart)))))
+
+(defun wa-handle-contacts (comp conn jid contacts)
+  (with-wa-handler-context (comp conn jid)
+    (format *debug-io* "~&got ~A contacts for ~A~%" (length contacts) jid)
+    (loop
+      for contact in contacts
+      do (add-wa-contact comp jid contact))))
+
 (defun bind-wa-handlers (comp conn jid)
   (on :ws-open conn (lambda () (wa-handle-ws-open comp conn jid)))
   (on :ws-close conn (lambda (&rest args)
@@ -854,6 +955,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
   (on :error-status-code conn (lambda (e) (wa-handle-error-status-code comp conn jid e)))
   (on :qrcode conn (lambda (text) (wa-handle-ws-qrcode comp conn jid text)))
   (on :message conn (lambda (msg dt) (wa-handle-message comp conn jid msg dt)))
+  (on :contacts conn (lambda (contacts) (wa-handle-contacts comp conn jid contacts)))
   (on :connected conn (lambda (waj) (wa-handle-ws-connected comp conn jid waj))))
 
 (defun handle-setup-user (comp jid)
@@ -935,6 +1037,57 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
         (t
          (reply "Unknown command. Try `help` for a list of supported commands."))))))
 
+(defun whatsxmpp-vcard-temp-handler (comp &key to from &allow-other-keys)
+  "Handles a vcard-temp IQ request."
+  (format *debug-io* "~&vcard-temp: ~A (from ~A)~%" to from)
+  (with-component-data-lock (comp)
+    (let* ((uid (get-user-id from))
+           (to-localpart (nth-value 1 (parse-jid to)))
+           (name
+             (cond
+               ((equal to-localpart "admin")
+                "whatsxmpp admin")
+               ((not uid)
+                (error 'stanza-error
+                       :defined-condition "registration-required"
+                       :text "You must register with the bridge admin to view contact details."
+                       :type "auth"))
+               (t
+                (let ((name (get-contact-name uid to-localpart)))
+                  (unless name
+                    (error 'stanza-error
+                           :defined-condition "item-not-found"
+                           :text "No vCard for that JID is available at this time."
+                           :type "modify"))
+                  name)))))
+      `((cxml:with-element "vCard"
+          (cxml:attribute "xmlns" +vcard-temp-ns+)
+          (cxml:with-element "FN"
+            (cxml:text ,name))
+          (cxml:with-element "NICKNAME"
+            (cxml:text ,name)))))))
+
+(defun whatsxmpp-presence-subscribe-handler (comp &key from to id &allow-other-keys)
+  "Handles a presence subscription request."
+  (with-component-data-lock (comp)
+    (multiple-value-bind (to-hostname to-localpart)
+        (parse-jid to)
+      (unless (equal to-hostname (component-name comp))
+        (warn "Got presence subscribe addressed to ~A!" to)
+        (return-from whatsxmpp-presence-subscribe-handler))
+      (format *debug-io* "~&presence subscribe from: ~A~%" from)
+      (if (or (equal to-localpart "admin") (whatsxmpp-localpart-to-wa-jid to-localpart))
+          (with-presence (comp (strip-resource from)
+                          :from to
+                          :type "subscribed"))
+          (send-stanza-error comp
+                             :stanza-type "presence"
+                             :id id :to from :from to
+                             :e (make-condition 'stanza-error
+                                                :defined-condition "item-not-found"
+                                                :text "That user's JID isn't in a recognizable format."
+                                                :type "modify"))))))
+
 (defun whatsxmpp-message-handler (comp &key from to body id &allow-other-keys)
   "Handles a message sent to the whatsxmpp bridge."
   (with-component-data-lock (comp)
@@ -944,40 +1097,36 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
         (warn "Got message addressed to ~A!" to)
         (return-from whatsxmpp-message-handler))
       (format *debug-io* "~&message from: ~A~%" from)
-      (with-prepared-statement
-          (get-user "SELECT id FROM users WHERE jid = ?")
-        (let ((stripped (strip-resource from)))
-          (bind-parameters get-user stripped)
-          (let ((uid (when (sqlite:step-statement get-user)
-                       (first (column-values get-user))))
-                (conn (gethash stripped (component-whatsapps comp)))
-                (wa-jid (whatsxmpp-localpart-to-wa-jid to-localpart)))
-            (labels
-                ((send-error (e)
-                   (send-stanza-error comp
-                                      :stanza-type "message"
-                                      :id id :to from :from to
-                                      :e e)))
-              (cond
-                ((equal to-localpart "admin")
-                 (handle-admin-command comp from body uid))
-                ((not uid)
-                 (send-error (make-condition 'stanza-error
-                                             :defined-condition "registration-required"
-                                             :text "You must register to use this bridge."
-                                             :type "auth")))
-                ((not wa-jid)
-                 (send-error (make-condition 'stanza-error
-                                             :defined-condition "item-not-found"
-                                             :text "That user's JID isn't in a recognizable format."
-                                             :type "modify")))
-                ((not conn)
-                 (send-error (make-condition 'stanza-error
-                                             :defined-condition "recipient-unavailable"
-                                             :text "You're currently not connected to WhatsApp."
-                                             :type "wait")))
-                (t
-                 (whatscl::send-simple-text-message conn wa-jid body))))))))))
+      (let* ((stripped (strip-resource from))
+             (uid (get-user-id stripped))
+             (conn (gethash stripped (component-whatsapps comp)))
+             (wa-jid (whatsxmpp-localpart-to-wa-jid to-localpart)))
+        (labels
+            ((send-error (e)
+               (send-stanza-error comp
+                                  :stanza-type "message"
+                                  :id id :to from :from to
+                                  :e e)))
+          (cond
+            ((equal to-localpart "admin")
+             (handle-admin-command comp from body uid))
+            ((not uid)
+             (send-error (make-condition 'stanza-error
+                                         :defined-condition "registration-required"
+                                         :text "You must register to use this bridge."
+                                         :type "auth")))
+            ((not wa-jid)
+             (send-error (make-condition 'stanza-error
+                                         :defined-condition "item-not-found"
+                                         :text "That user's JID isn't in a recognizable format."
+                                         :type "modify")))
+            ((not conn)
+             (send-error (make-condition 'stanza-error
+                                         :defined-condition "recipient-unavailable"
+                                         :text "You're currently not connected to WhatsApp."
+                                         :type "wait")))
+            (t
+             (whatscl::send-simple-text-message conn wa-jid body))))))))
 
 (defun whatsxmpp-load-users (comp)
   (with-component-data-lock (comp)
@@ -987,6 +1136,11 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
           while (sqlite:step-statement stmt)
           do (with-bound-columns (jid) stmt
                (setf (gethash jid (component-whatsapps comp)) nil))))))
+
+(defun register-whatsxmpp-handlers (comp)
+  (register-component-iq-handler comp :disco-info #'disco-info-handler)
+  (register-component-iq-handler comp :vcard-temp-get #'whatsxmpp-vcard-temp-handler)
+  (register-component-iq-handler comp :disco-items #'disco-items-handler))
 
 (defun whatsxmpp-init ()
   "Initialise the whatsxmpp bridge."
@@ -1001,6 +1155,8 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                                 :upload-component-name upload-name)))
         (on :text-message ret (lambda (&rest args)
                                 (apply #'whatsxmpp-message-handler ret args)))
+        (on :presence-subscribe ret (lambda (&rest args)
+                                      (apply #'whatsxmpp-presence-subscribe-handler ret args)))
         (register-whatsxmpp-handlers ret)
         (whatsxmpp-load-users ret)
         (setf (component-reconnect-timer ret) (trivial-timers:make-timer

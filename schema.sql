@@ -14,7 +14,7 @@ CREATE TABLE users (
 );
 
 CREATE TABLE user_contacts (
-       id SERIAL PRIMARY KEY,
+       id INTEGER PRIMARY KEY,
        user_id INT NOT NULL REFERENCES users,
        wa_jid VARCHAR UNIQUE NOT NULL,
        subscription_state VARCHAR NOT NULL DEFAULT 'none',
