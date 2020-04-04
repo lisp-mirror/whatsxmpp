@@ -1,5 +1,5 @@
 (defsystem "whatsxmpp"
-  :depends-on ("usocket" "bordeaux-threads" "event-emitter" "blackbird" "cxml" "sha1" "uuid" "sqlite")
+  :depends-on ("usocket" "bordeaux-threads" "event-emitter" "blackbird" "cxml" "ironclad" "uuid" "sqlite" "whatscl" "drakma")
   :serial t
   :components
   ((:file "packages")

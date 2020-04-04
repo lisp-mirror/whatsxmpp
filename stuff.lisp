@@ -8,6 +8,7 @@
 (defparameter +disco-items-ns+ "http://jabber.org/protocol/disco#items")
 (defparameter +muc-ns+ "http://jabber.org/protocol/muc")
 (defparameter +file-upload-ns+ "urn:xmpp:http:upload:0")
+(defparameter +oob-ns+ "jabber:x:oob")
 (defparameter +vcard-temp-ns+ "vcard-temp")
 
 (defclass xmpp-component (event-emitter)
@@ -38,6 +39,14 @@
    (promises
     :initform (make-hash-table :test 'equal)
     :accessor component-promises)))
+
+(defclass whatsxmpp-component (xmpp-component)
+  ((whatsapps
+    :initform (make-hash-table :test 'equal)
+    :accessor component-whatsapps)
+   (upload-component-name
+    :initarg :upload-component-name
+    :accessor component-upload-component-name)))
 
 (defmacro with-component-data-lock ((comp) &body body)
   `(bt:with-recursive-lock-held ((component-data-lock ,comp))
@@ -178,11 +187,19 @@
         (cxml:attribute "xmlns" +component-ns+)
         (cxml:attribute "to" (component-name comp))))))
 
+(defun sha1-hex (str)
+  "Returns the SHA1 of STR, a string, in lowercase hex."
+  (format nil "~(~{~2,'0X~}~)"
+          (coerce
+           (ironclad:digest-sequence :sha1
+                                     (babel:string-to-octets str))
+           'list)))
+
 (defun component-stream-started (comp)
   (with-component-xml-output (comp)
     (cxml:with-element "handshake"
       (cxml:attribute "xmlns" +component-ns+)
-      (cxml:text (string-downcase (sha1:sha1-hex (concatenate 'string (component-stream-id comp) (component-shared-secret comp))))))))
+      (cxml:text (string-downcase (sha1-hex (concatenate 'string (component-stream-id comp) (component-shared-secret comp))))))))
 
 (defun make-message-uuid (comp)
   (with-accessors ((promises component-promises)) comp
@@ -369,14 +386,14 @@
   (declare (ignore comp))
   (format *debug-io* "Connection complete! \o/"))
 
-(defun send-iq-error (comp id to from e)
-  "Send E (a STANZA-ERROR) as an IQ error response."
+(defun send-stanza-error (comp &key id to from e stanza-type)
+  "Send E (a STANZA-ERROR) as an error response to a stanza of type STANZA."
   (with-component-xml-output (comp)
-    (cxml:with-element "iq"
+    (cxml:with-element stanza-type
       (cxml:attribute "type" "error")
       (cxml:attribute "id" id)
-      (cxml:attribute "from" to)
-      (cxml:attribute "to" from)
+      (cxml:attribute "from" from)
+      (cxml:attribute "to" to)
       (cxml:with-element "error"
         (cxml:attribute "type" (stanza-error-type e))
         (cxml:with-element (stanza-error-condition e)
@@ -394,26 +411,6 @@
 (defmacro disco-feature (feature)
   `(cxml:with-element "feature"
      (cxml:attribute "var" ,feature)))
-
-(defun disco-info-handler (comp &key to &allow-other-keys)
-  "Handles XEP-0030 disco#info requests."
-  (format *debug-io* "~&disco#info: ~A~%" to)
-  (with-component-data-lock (comp)
-    `((cxml:with-element "query"
-        (cxml:attribute "xmlns" ,+disco-info-ns+)
-        (disco-feature +disco-info-ns+)
-        ,@(cond
-            ((equal to (component-name comp))
-             `((disco-identity "whatsxmpp bridge" "xmpp" "gateway")
-               (disco-feature ,+muc-ns+)))
-            (t nil))))))
-
-(defun disco-items-handler (comp &key to &allow-other-keys)
-  "Handles XEP-0030 disco#items requests."
-  (format *debug-io* "~&disco#items: ~A~%" to)
-  (with-component-data-lock (comp)
-    `((cxml:with-element "query"
-        (cxml:attribute "xmlns" ,+disco-info-ns+)))))
 
 (defun register-component-iq-handler (comp handler-name func)
   "Register FUNC to be called for the HANDLER-NAME IQ handler on COMP."
@@ -442,13 +439,20 @@
                      (cxml:attribute "from" ,to)
                      (cxml:attribute "to" ,from)
                      ,@result-forms)))))
-       (stanza-error (e) (send-iq-error comp id to from e))
+       (stanza-error (e)
+                     (send-stanza-error comp
+                                        :stanza-type "iq"
+                                        :id id :to from :from to :e e))
        (t (e)
-          (send-iq-error comp id to from
-                         (make-condition 'stanza-error
-                                         :defined-condition "internal-server-error"
-                                         :text (write-to-string e)
-                                         :type "cancel"))
+          (send-stanza-error comp
+                             :stanza-type "iq"
+                             :id id
+                             :to from
+                             :from to
+                             :e (make-condition 'stanza-error
+                                                :defined-condition "internal-server-error"
+                                                :text (write-to-string e)
+                                                :type "cancel"))
           (with-simple-restart
               (continue "Continue execution.")
             (invoke-debugger e)))))))
@@ -512,14 +516,15 @@
   "Handles a message STANZA for component COMP."
   (let* ((from (dom:get-attribute stanza "from"))
          (to (dom:get-attribute stanza "to"))
+         (id (dom:get-attribute stanza "id"))
          (body (get-node-named (dom:child-nodes stanza) "body")))
     (if body
         (let* ((child-nodes (dom:child-nodes body))
                (text (if (> (length child-nodes) 0)
                          (dom:node-value (elt child-nodes 0))
                          "")))
-          (emit :text-message comp :from from :to to :body text :stanza stanza))
-        (emit :message comp :from from :to to :stanza stanza))))
+          (emit :text-message comp :from from :to to :body text :id id :stanza stanza))
+        (emit :message comp :from from :to to :id id :stanza stanza))))
 
 (defun component-stanza (comp stanza)
   "Handles a STANZA received by component COMP."
@@ -553,3 +558,329 @@
                             (component-stanza component stanza)))
     (write-stream-header component)
     component))
+
+(defun disco-info-handler (comp &key to &allow-other-keys)
+  "Handles XEP-0030 disco#info requests."
+  (format *debug-io* "~&disco#info: ~A~%" to)
+  (with-component-data-lock (comp)
+    `((cxml:with-element "query"
+        (cxml:attribute "xmlns" ,+disco-info-ns+)
+        (disco-feature +disco-info-ns+)
+        ,@(cond
+            ((equal to (component-name comp))
+             `((disco-identity "whatsxmpp bridge" "xmpp" "gateway")
+               (disco-feature ,+muc-ns+)))
+            (t nil))))))
+
+(defun disco-items-handler (comp &key to &allow-other-keys)
+  "Handles XEP-0030 disco#items requests."
+  (format *debug-io* "~&disco#items: ~A~%" to)
+  (with-component-data-lock (comp)
+    `((cxml:with-element "query"
+        (cxml:attribute "xmlns" ,+disco-info-ns+)))))
+
+(defun register-whatsxmpp-handlers (comp)
+  (register-component-iq-handler comp :disco-info #'disco-info-handler)
+  (register-component-iq-handler comp :disco-items #'disco-items-handler))
+
+(defun parse-jid (jid)
+  "Parse JID, returning the multiple values HOSTNAME, LOCALPART and RESOURCE."
+  (declare (type string jid))
+  (let ((at-pos (position #\@ jid))
+        (slash-pos (position #\/ jid)))
+    (cond
+      ((and (not slash-pos) (not at-pos))
+       (values jid nil nil))
+      ((and slash-pos (not at-pos))
+       (multiple-value-bind (hostname resource)
+           (whatscl::split-at jid slash-pos)
+         (values hostname nil resource)))
+      ((and (not slash-pos) at-pos)
+       (multiple-value-bind (localpart hostname)
+           (whatscl::split-at jid at-pos)
+         (values hostname localpart nil)))
+      (t
+       (multiple-value-bind (rest resource)
+           (whatscl::split-at jid slash-pos)
+         (multiple-value-bind (localpart hostname)
+             (whatscl::split-at rest at-pos)
+           (values hostname localpart resource)))))))
+
+(defun strip-resource (jid)
+  "Strips a resource from JID, if there is one, returning the bare JID."
+  (let ((slash-pos (position #\/ jid)))
+    (if slash-pos
+        (whatscl::split-at jid slash-pos)
+        jid)))
+
+(defun admin-jid (comp)
+  "Get the admin JID for COMP. You need the lock to be taken out for this one."
+  (concatenate 'string "admin@" (component-name comp) "/adminbot"))
+
+(defparameter *admin-help-text*
+  "This is a very beta WhatsApp to XMPP bridge!
+Commands:
+- register: set up the bridge
+- connect: manually connect to WhatsApp
+- stop: disconnect from WhatsApp, and disable automatic reconnections
+- help: view this help text")
+
+(defun admin-msg (comp jid text)
+  "Send an admin message from the admin on COMP to JID."
+  (send-text-message comp jid text (admin-jid comp)))
+
+(defun wa-resetup-users (comp)
+  "Go through the list of WhatsApp users and reconnect those whose connections have dropped."
+  (with-component-data-lock (comp)
+    (let ((users-to-reconnect
+            (loop
+              for jid being the hash-keys in (component-whatsapps comp)
+                using (hash-value conn)
+              append (unless conn
+                       (list jid)))))
+      (format nil "~&resetup-users: ~A users to reconnect~%" (length users-to-reconnect))
+      (loop
+        for user in users-to-reconnect
+        do (handle-setup-user comp user)))))
+
+(defun send-qrcode (comp jid text)
+  "Send a QR code containing TEXT to JID."
+  (with-component-data-lock (comp)
+    (uiop:with-temporary-file (:stream stream
+                               :pathname path
+                               :keep t) ; Needed because async
+      (format *debug-io* "~&using path ~A~%" path)
+      (cl-qrencode:encode-png-stream text stream)
+      (catcher
+       (attach
+        (request-http-upload-slot comp (component-upload-component-name comp)
+                                  "qrcode.png"
+                                  (file-length stream)
+                                  "image/png")
+        (lambda (slot)
+          (destructuring-bind ((put-url . headers) get-url) slot
+            (format *debug-io* "~&got put-url: ~A~%   get-url: ~A~%" put-url get-url)
+            (multiple-value-bind (body status-code)
+                (drakma:http-request put-url
+                                     :additional-headers headers
+                                     :content-type "image/png"
+                                     :method :put
+                                     :content path)
+              (unless (and (>= status-code 200) (< status-code 300))
+                (format *debug-io* "~&upload failed! status ~A, body ~A~%" status-code body)
+                (error "HTTP upload failed with status ~A" status-code))
+              (with-component-data-lock (comp)
+                (let ((ajid (admin-jid comp)))
+                  (admin-msg comp jid "WhatsApp Web registration: Scan the following QR code with your device! (Menu -> WhatsApp Web)")
+                  (with-message (comp jid :from ajid)
+                    (cxml:with-element "body"
+                      (cxml:text get-url))
+                    (cxml:with-element "x"
+                      (cxml:attribute "xmlns" +oob-ns+)
+                      (cxml:with-element "url"
+                        (cxml:text get-url))))
+                  (admin-msg comp jid "(Code expired? Be faster next time. Get a new one with `connect`.)")))))))
+       (t (e)
+          (admin-msg comp jid (format nil "Failed to upload QR code!~%Report the following error to the bridge admin: `~A`" e))
+          (invoke-debugger e))))))
+
+(defun wa-conn-recent-p (comp conn jid)
+  (let ((current (gethash jid (component-whatsapps comp))))
+    (eql current conn)))
+
+(defmacro with-wa-handler-context ((comp conn jid) &rest body)
+  "Takes the component data lock, checks that CONN is the most up-to-date connection for JID, and then executes BODY."
+  `(with-component-data-lock (,comp)
+     (if (wa-conn-recent-p ,comp ,conn ,jid)
+         (progn ,@body)
+         (warn "WA handler called with out of date connection, ignoring"))))
+
+(defun wa-handle-ws-error (comp conn jid err)
+  (with-wa-handler-context (comp conn jid)
+    (format *debug-io* "~&ws-error ~A: ~A~%" jid err)
+    (admin-msg comp jid
+               (format nil "WhatsApp websocket error: ~A" err))
+    (setf (gethash jid (component-whatsapps comp)) nil)))
+
+(defun wa-handle-ws-close (comp conn jid)
+  (with-wa-handler-context (comp conn jid)
+    (format *debug-io* "~&ws-close: ~A~%" jid)
+    (admin-msg comp jid
+               "WhatsApp websocket closed (will reconnect soon).")
+    (setf (gethash jid (component-whatsapps comp)) nil)))
+
+(defun wa-handle-ws-open (comp conn jid)
+  (with-wa-handler-context (comp conn jid)
+    (format *debug-io* "~&ws-open: ~A~%" jid)
+    (admin-msg comp jid
+               "WhatsApp websocket connected.")))
+
+(defun wa-handle-ws-qrcode (comp conn jid qrcode)
+  (with-wa-handler-context (comp conn jid)
+    (format *debug-io* "~&qrcode: ~A~%" jid)
+    (send-qrcode comp jid qrcode)))
+
+(defun update-session-data (jid sessdata)
+  (with-prepared-statement
+      (update-sessdata-stmt "UPDATE users SET session_data = ? WHERE jid = ?")
+    (format *debug-io* "~&update sessdata for ~A~%" jid)
+    (bind-parameters update-sessdata-stmt sessdata jid)
+    (sqlite:step-statement update-sessdata-stmt)))
+
+(defun wa-handle-ws-connected (comp conn jid wa-jid)
+  (with-wa-handler-context (comp conn jid)
+    (let ((sessdata (whatscl::serialize-persistent-session (whatscl::wac-session conn))))
+      (update-session-data jid sessdata))
+    (admin-msg comp jid
+               (format nil "Logged in to WhatsApp as ~A." wa-jid))
+    (format *debug-io* "~&ws-connected: ~A~%" jid)))
+
+(defun wa-handle-error-status-code (comp conn jid err)
+  (with-wa-handler-context (comp conn jid)
+    (format *debug-io* "~&error-status-code for ~A: ~A~%" jid err)
+    (let ((status-code (whatscl::scerror-status-code err)))
+      (cond
+        ((equal status-code 401)
+         (progn
+           (admin-msg comp jid "Error: The WhatsApp Web connection was removed from your device! You'll need to scan the QR code again.")
+           (update-session-data jid "")))
+        ((equal status-code 403)
+         (progn
+           (admin-msg comp jid "Error: WhatsApp Web denied access. You may have violated the Terms of Service.")
+           (update-session-data jid "")))
+        (t
+         (admin-msg comp jid (format nil "Login failure: ~A" err)))))
+    (admin-msg comp jid "(Disabling automatic reconnections.)")
+    (remhash jid (component-whatsapps comp))))
+
+(defun wa-handle-error (comp conn jid err)
+  (with-wa-handler-context (comp conn jid)
+    (format *debug-io* "~&whatscl error for ~A: ~A~%" jid err)
+    (admin-msg comp jid
+               (format nil "A programming error has been detected and your connection has been aborted unexpectedly.~%Report the following error to the bridge admin: ~A" err))
+    (admin-msg comp jid "(Disabling automatic reconnections.)")
+    (remhash jid (component-whatsapps comp))))
+
+(defun bind-wa-handlers (comp conn jid)
+  (on :ws-open conn (lambda () (wa-handle-ws-open comp conn jid)))
+  (on :ws-close conn (lambda (&rest args)
+                       (declare (ignore args))
+                       (wa-handle-ws-close comp conn jid)))
+  (on :ws-error conn (lambda (e) (wa-handle-ws-error comp conn jid e)))
+  (on :error conn (lambda (e) (wa-handle-error comp conn jid e)))
+  (on :error-status-code conn (lambda (e) (wa-handle-error-status-code comp conn jid e)))
+  (on :qrcode conn (lambda (text) (wa-handle-ws-qrcode comp conn jid text)))
+  (on :connected conn (lambda (waj) (wa-handle-ws-connected comp conn jid waj))))
+
+(defun handle-setup-user (comp jid)
+  "Set up a WhatsApp connection for JID on COMP."
+  (with-component-data-lock (comp)
+    (format *debug-io* "~&setup user: ~A~%" jid)
+    (with-prepared-statement
+        (get-session-data-stmt "SELECT session_data FROM users WHERE jid = ?")
+        (bind-parameters get-session-data-stmt jid)
+      (assert (sqlite:step-statement get-session-data-stmt) ()
+              "HANDLE-SETUP-USER called for invalid JID ~A" jid)
+      (let* ((sessdata (sqlite:statement-column-value get-session-data-stmt 0))
+             (sess (when (and sessdata (> (length sessdata) 0))
+                     (format *debug-io* "~&reusing old session data for ~A~%" jid)
+                     (whatscl::deserialize-persistent-session sessdata)))
+             (conn (whatscl::make-connection sess)))
+        (admin-msg comp jid "Connecting to WhatsApp...")
+        (symbol-macrolet
+            ((stored-conn (gethash jid (component-whatsapps comp))))
+          (let ((old-conn))
+            (when stored-conn
+              (setf old-conn stored-conn))
+            (setf stored-conn conn)
+            (bind-wa-handlers comp conn jid)
+            (when old-conn
+              (admin-msg comp jid "(destroying your old connection)")
+              (whatscl::close-connection old-conn))
+            (whatscl::start-connection conn)))))))
+
+(defun start-user-registration (comp jid)
+  "Register the JID as wanting to use the bridge COMP."
+  (with-component-data-lock (comp)
+    (let ((stripped (strip-resource jid)))
+      (admin-msg comp jid "Starting registration!")
+      (format *debug-io* "~&register: ~A~%" stripped)
+      (with-prepared-statement
+          (insert-stmt "INSERT INTO users (jid) VALUES (?) ON CONFLICT (jid) DO UPDATE SET session_data = ''")
+        (bind-parameters insert-stmt stripped)
+        (sqlite:step-statement insert-stmt))
+      (admin-msg comp jid "WhatsApp connection should begin shortly...")
+      (handle-setup-user comp stripped))))
+
+(defun handle-admin-command (comp from body uid)
+  "Handles an admin command sent to COMP."
+  (labels ((reply (text)
+             (send-text-message comp from text (admin-jid comp))))
+    (let ((body (string-downcase body))
+          (stripped (strip-resource from)))
+      (cond
+        ((and uid (equal body "register"))
+         (reply (format nil "You're already registered!~%Try `connect`. If you really want to re-register, use the `register -force` command.")))
+        ((or
+          (and (not uid) (equal body "register"))
+          (and uid (equal body "register -force")))
+         (start-user-registration comp stripped))
+        ((equal body "help")
+         (reply *admin-help-text*))
+        ((not uid)
+         (reply "You're not registered with this bridge. Try `register` or `help`."))
+        ((equal body "connect")
+         (handle-setup-user comp stripped))
+        ((equal body "stop")
+         (let ((conn (gethash stripped (component-whatsapps comp))))
+           (when (remhash stripped (component-whatsapps comp))
+             (reply "WhatsApp connections disabled."))
+           (when conn
+             (whatscl::close-connection conn))))
+        (t
+         (reply "Unknown command. Try `help` for a list of supported commands."))))))
+
+(defun whatsxmpp-message-handler (comp &key from to body id &allow-other-keys)
+  "Handles a message sent to the whatsxmpp bridge."
+  (with-component-data-lock (comp)
+    (multiple-value-bind (to-hostname to-localpart)
+        (parse-jid to)
+      (unless (equal to-hostname (component-name comp))
+        (warn "Got message addressed to ~A!" to)
+        (return-from whatsxmpp-message-handler))
+      (format *debug-io* "~&message from: ~A~%" from)
+      (with-prepared-statement
+          (get-user "SELECT id FROM users WHERE jid = ?")
+        (let ((stripped (strip-resource from)))
+          (bind-parameters get-user stripped))
+        (let ((uid (when (sqlite:step-statement get-user)
+                     (first (column-values get-user)))))
+          (cond
+            ((equal to-localpart "admin")
+             (handle-admin-command comp from body uid))
+            ((not uid)
+             (send-stanza-error comp
+                                :stanza-type "message"
+                                :id id :to from :from to
+                                :e (make-condition 'stanza-error
+                                                   :defined-condition "registration-required"
+                                                   :text "You must register to use this bridge."
+                                                   :type "auth")))
+            (t
+             (warn "Messages are unimplemented!"))))))))
+
+(defun whatsxmpp-init ()
+  "Initialise the whatsxmpp bridge."
+  (connect-database)
+  (with-prepared-statement
+      (config "SELECT server, port, component_name, shared_secret, upload_component_name FROM configuration WHERE rev = 1")
+    (assert (sqlite:step-statement config) () "No configuration in database!")
+    (destructuring-bind (server port component-name shared-secret upload-name)
+        (column-values config)
+      (let* ((comp (make-component server port shared-secret component-name))
+             (ret (change-class comp 'whatsxmpp-component
+                                :upload-component-name upload-name)))
+        (on :text-message ret (lambda (&rest args)
+                                (apply #'whatsxmpp-message-handler ret args)))
+        (register-whatsxmpp-handlers ret)
+        ret))))

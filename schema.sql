@@ -1,5 +1,14 @@
+CREATE TABLE configuration (
+       rev INT PRIMARY KEY,
+       server VARCHAR NOT NULL,
+       port INT NOT NULL,
+       component_name VARCHAR NOT NULL,
+       shared_secret VARCHAR NOT NULL,
+       upload_component_name VARCHAR NOT NULL
+);
+
 CREATE TABLE users (
-       id SERIAL PRIMARY KEY,
+       id INTEGER PRIMARY KEY,
        jid VARCHAR UNIQUE NOT NULL,
        session_data VARCHAR
 );
