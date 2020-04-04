@@ -68,6 +68,14 @@ In other words, prepares STATEMENT once, then returns the prepared statement aft
          for ,i-sym from 0 below (length (sqlite:statement-column-names ,stmt))
          collect (sqlite:statement-column-value ,stmt ,i-sym)))))
 
+(defmacro with-bound-columns (parameters statement &body forms)
+  "Binds each column value of STATEMENT to the symbols in PARAMETERS, and runs FORMS."
+  (let ((let-forms (loop
+                     for param in parameters
+                     for idx from 0 upto (1- (length parameters))
+                     collect `(,param (sqlite:statement-column-value ,statement ,idx)))))
+    `(let (,@let-forms) ,@forms)))
+
 (defmacro bind-parameters (statement &rest parameters)
   "Binds PARAMETERS to the prepared statement STATEMENT.
 
