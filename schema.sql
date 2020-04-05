@@ -22,3 +22,11 @@ CREATE TABLE user_contacts (
        name VARCHAR,
        notify VARCHAR
 );
+
+CREATE TABLE user_messages (
+       id INTEGER PRIMARY KEY,
+       user_id INT NOT NULL REFERENCES users,
+       xmpp_id VARCHAR NOT NULL,
+       wa_id VARCHAR NOT NULL,
+       UNIQUE(user_id, wa_id)
+);

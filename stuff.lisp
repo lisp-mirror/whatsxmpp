@@ -14,6 +14,7 @@
 (defparameter +vcard-temp-ns+ "vcard-temp")
 (defparameter +nick-ns+ "http://jabber.org/protocol/nick")
 (defparameter +roster-exchange-ns+ "http://jabber.org/protocol/rosterx")
+(defparameter +delivery-receipts-ns+ "urn:xmpp:receipts")
 
 (defclass xmpp-component (event-emitter)
   ((socket
@@ -270,6 +271,11 @@
 (defun get-node-named (nodes name)
   "Finds the node with tag name NAME in NODES, returning NIL if none was found."
   (flet ((is-the-node (node) (equal (dom:tag-name node) name)))
+    (find-if #'is-the-node nodes)))
+
+(defun get-node-with-xmlns (nodes xmlns)
+  "Finds the node with XML namespace XMLNS in NODES, returning NIL if none was found."
+  (flet ((is-the-node (node) (equal (dom:get-attribute node "xmlns") xmlns)))
     (find-if #'is-the-node nodes)))
 
 (defun get-disco-info (comp to &optional from)
@@ -536,14 +542,22 @@
   (let* ((from (dom:get-attribute stanza "from"))
          (to (dom:get-attribute stanza "to"))
          (id (dom:get-attribute stanza "id"))
-         (body (get-node-named (dom:child-nodes stanza) "body")))
-    (if body
-        (let* ((child-nodes (dom:child-nodes body))
-               (text (if (> (length child-nodes) 0)
-                         (dom:node-value (elt child-nodes 0))
-                         "")))
-          (emit :text-message comp :from from :to to :body text :id id :stanza stanza))
-        (emit :message comp :from from :to to :id id :stanza stanza))))
+         (children (dom:child-nodes stanza))
+         (body (get-node-named children "body"))
+         (marker (get-node-with-xmlns children +chat-markers-ns+)))
+    (cond
+      (body
+       (let* ((child-nodes (dom:child-nodes body))
+              (text (if (> (length child-nodes) 0)
+                        (dom:node-value (elt child-nodes 0))
+                        "")))
+         (emit :text-message comp :from from :to to :body text :id id :stanza stanza)))
+      (marker
+       (let ((marker-type (dom:tag-name marker))
+             (msgid (dom:get-attribute marker "id")))
+         (emit :message-marker comp :from from :to to :type marker-type :marker-id msgid :id id :stanza stanza)))
+      (t
+       (emit :message comp :from from :to to :id id :stanza stanza)))))
 
 (defun component-stanza (comp stanza)
   "Handles a STANZA received by component COMP."
@@ -654,9 +668,9 @@ Commands:
                   :from (admin-jid comp))
     (when show
       (cxml:with-element "show"
-        (cxml:text show))
-      (cxml:with-element "status"
-        (cxml:text status)))))
+        (cxml:text show)))
+    (cxml:with-element "status"
+      (cxml:text status))))
 
 
 (defun wa-resetup-users (comp)
@@ -841,11 +855,13 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
            (wa-ts (whatscl::message-ts msg))
            (xmpp-id (concatenate 'string
                                  "wa-" wa-id "-" (write-to-string wa-ts)))
+           (uid (get-user-id jid))
+           (previous-xmpp-id (lookup-wa-msgid uid wa-id))
            (local-time:*default-timezone* local-time:+utc-zone+)
            (ts (local-time:unix-to-timestamp wa-ts)))
-      (format *debug-io* "~&message ~A for ~A with key ~A (type ~A)~%"
-              wa-id jid key delivery-type)
-      (when (eql delivery-type :relay) ; i.e. realtime
+      (format *debug-io* "~&message ~A for ~A with key ~A (type ~A) - previous ID ~A~%"
+              wa-id jid key delivery-type previous-xmpp-id)
+      (when (not previous-xmpp-id) ; don't process messages twice
         (when (typep key 'whatscl::message-key-receiving) ; ignore group and self messages
           (when (typep contents 'whatscl::message-contents-text)
             (let ((text (whatscl::contents-text contents))
@@ -854,6 +870,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                                      "@"
                                      (component-name comp)
                                      "/whatsapp")))
+              (insert-user-message uid xmpp-id wa-id)
               (with-message (comp jid :from from :id xmpp-id)
                 (cxml:with-element "body"
                   (cxml:text text))
@@ -862,11 +879,6 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                   (cxml:attribute "stamp" (local-time:format-timestring nil ts)))
                 (cxml:with-element "markable"
                   (cxml:attribute "xmlns" +chat-markers-ns+))))))))))
-
-(defun wa-handle-message-ack (comp conn jid &key id ack from to ts)
-  (with-wa-handler-context (comp conn jid)
-
-    ))
 
 (defun get-user-id (jid)
   "Get the user ID of JID, or NIL if none exists."
@@ -913,6 +925,31 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
             (bind-parameters update-stmt "asked" ctid)
             (sqlite:step-statement update-stmt)))))))
 
+(defun insert-user-message (uid xmpp-id wa-id)
+  "Inserts a mapping between the message IDs XMPP-ID and WA-ID for the user UID."
+  (with-prepared-statements
+      ((insert-stmt "INSERT INTO user_messages (user_id, xmpp_id, wa_id) VALUES (?, ?, ?)"))
+    (bind-parameters insert-stmt uid xmpp-id wa-id)
+    (sqlite:step-statement insert-stmt)))
+
+(defun lookup-wa-msgid (uid wa-msgid)
+  "Look up the XMPP ID for the WhatsApp message ID WA-MSGID, when received for the user UID."
+  (with-prepared-statements
+      ((get-stmt "SELECT xmpp_id FROM user_messages WHERE user_id = ? AND wa_id = ?"))
+    (bind-parameters get-stmt uid wa-msgid)
+    (when (sqlite:step-statement get-stmt)
+      (with-bound-columns (xid) get-stmt
+        xid))))
+
+(defun lookup-xmpp-msgid (uid xmpp-msgid)
+  "Look up the WhatsApp message ID for the XMPP message ID XMPP-MSGID, when received for the user UID."
+  (with-prepared-statements
+      ((get-stmt "SELECT wa_id FROM user_messages WHERE user_id = ? AND xmpp_id = ?"))
+    (bind-parameters get-stmt uid xmpp-msgid)
+    (when (sqlite:step-statement get-stmt)
+      (with-bound-columns (wid) get-stmt
+        wid))))
+
 (defun add-wa-contact (comp jid contact)
   "Adds the WHATSCL:CONTACT to the list of JID's contacts, or updates it if it already exists."
   (with-accessors ((ct-jid whatscl::contact-jid)
@@ -945,6 +982,57 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
       for contact in contacts
       do (add-wa-contact comp jid contact))))
 
+(defun wa-handle-contact (comp conn jid contact)
+  (with-wa-handler-context (comp conn jid)
+    (format *debug-io* "~&got contact ~A for ~A~%" contact jid)
+    (add-wa-contact comp jid contact)))
+
+(defun wa-handle-message-ack (comp conn jid &key id ack from to &allow-other-keys)
+  (with-wa-handler-context (comp conn jid)
+    (format *debug-io* "~&message ack: ~A is ~A (from ~A, to ~A)~%" id ack from to)
+    (when (equal (whatscl::jid-to-string from) (whatscl::wac-jid conn))
+      ;; (someone else acked this message)
+      (let ((xmpp-id (lookup-wa-msgid (get-user-id jid) id)))
+        (if xmpp-id
+            (let ((marker-name
+                    (cond
+                      ((eql ack :received) "received")
+                      ((eql ack :read) "displayed")
+                      ((eql ack :played) "displayed")
+                      (t (return-from wa-handle-message-ack))))
+                  (from-jid (concatenate 'string
+                                         (wa-jid-to-whatsxmpp-localpart to)
+                                         "@"
+                                         (component-name comp))))
+              (with-message (comp jid
+                             :from from-jid)
+                (cxml:with-element marker-name
+                  (cxml:attribute "xmlns" +chat-markers-ns+)
+                  (cxml:attribute "id" xmpp-id))))
+            (warn "Got ack for unknown message id ~A" id))))))
+
+(defun wa-handle-message-send-result (comp conn jid &key orig-from orig-to orig-id result)
+  (with-wa-handler-context (comp conn jid)
+    (format *debug-io* "~&message send result for ~A from ~A: ~A~%" orig-id orig-from result)
+    (handler-case
+        (let ((status (cdr (assoc :status result))))
+          (unless status
+            (error "No status response provided by WhatsApp"))
+          (unless (eql status 200)
+            (error "Message sending failed with code ~A" status))
+          (with-message (comp orig-from :from orig-to)
+            (cxml:with-element "received"
+              (cxml:attribute "xmlns" +delivery-receipts-ns+)
+              (cxml:attribute "id" orig-id))))
+      (error (e)
+        (send-stanza-error comp
+                           :id orig-id :to orig-from :from orig-to
+                           :stanza-type "message"
+                           :e (make-condition 'stanza-error
+                                              :defined-condition "recipient-unavailable"
+                                              :type "modify"
+                                              :text (write-to-string e)))))))
+
 (defun bind-wa-handlers (comp conn jid)
   (on :ws-open conn (lambda () (wa-handle-ws-open comp conn jid)))
   (on :ws-close conn (lambda (&rest args)
@@ -956,6 +1044,10 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
   (on :qrcode conn (lambda (text) (wa-handle-ws-qrcode comp conn jid text)))
   (on :message conn (lambda (msg dt) (wa-handle-message comp conn jid msg dt)))
   (on :contacts conn (lambda (contacts) (wa-handle-contacts comp conn jid contacts)))
+  (on :contact conn (lambda (contact) (wa-handle-contact comp conn jid contact)))
+  (on :message-ack conn (lambda (&key id ack from to &allow-other-keys)
+                          (wa-handle-message-ack comp conn jid
+                                                 :id id :ack ack :from from :to to)))
   (on :connected conn (lambda (waj) (wa-handle-ws-connected comp conn jid waj))))
 
 (defun handle-setup-user (comp jid)
@@ -973,6 +1065,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                      (whatscl::deserialize-persistent-session sessdata)))
              (conn (whatscl::make-connection sess)))
         (admin-msg comp jid "Connecting to WhatsApp...")
+        (admin-presence comp jid "Connection in progress..." "away")
         (symbol-macrolet
             ((stored-conn (gethash jid (component-whatsapps comp))))
           (let ((old-conn))
@@ -1088,6 +1181,41 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                                                 :text "That user's JID isn't in a recognizable format."
                                                 :type "modify"))))))
 
+(defun whatsxmpp-marker-handler (comp &key from to type marker-id id &allow-other-keys)
+  "Handles a message marker sent to the whatsxmpp bridge."
+  (with-component-data-lock (comp)
+    (multiple-value-bind (to-hostname to-localpart)
+        (parse-jid to)
+      (unless (equal to-hostname (component-name comp))
+        (warn "Got message addressed to ~A!" to)
+        (return-from whatsxmpp-marker-handler))
+      (format *debug-io* "~&marker: ~A on ~A from ~A~%" type marker-id from)
+      (unless (equal type "displayed")
+        (return-from whatsxmpp-marker-handler))
+      (let* ((stripped (strip-resource from))
+             (uid (get-user-id stripped))
+             (conn (gethash stripped (component-whatsapps comp)))
+             (wa-jid (whatsxmpp-localpart-to-wa-jid to-localpart)))
+        (unless uid
+          (warn "Got marker for user that isn't registered")
+          (return-from whatsxmpp-marker-handler))
+        (unless conn
+          (warn "Can't send marker, since user connection is offline")
+          (send-stanza-error comp
+                             :id id :from to :to from
+                             :stanza-type "message"
+                             :e (make-condition 'stanza-error
+                                                :defined-condition "recipient-unavailable"
+                                                :text "Can't process chat marker: you're currently not connected to WhatsApp."
+                                                :type "wait"))
+          (return-from whatsxmpp-marker-handler))
+        (let ((wa-msgid (lookup-xmpp-msgid uid marker-id)))
+          (if wa-msgid
+              (progn
+                (format *debug-io* "~&marking read for ~A: ~A from ~A~%" stripped wa-msgid wa-jid)
+                (whatscl::send-message-read conn wa-jid wa-msgid))
+              (warn "Got marker for unknown XMPP message ID ~A" marker-id)))))))
+
 (defun whatsxmpp-message-handler (comp &key from to body id &allow-other-keys)
   "Handles a message sent to the whatsxmpp bridge."
   (with-component-data-lock (comp)
@@ -1126,7 +1254,14 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                                          :text "You're currently not connected to WhatsApp."
                                          :type "wait")))
             (t
-             (whatscl::send-simple-text-message conn wa-jid body))))))))
+             (let* ((callback (lambda (conn result)
+                                (wa-handle-message-send-result comp conn stripped
+                                                               :orig-from from
+                                                               :orig-to to
+                                                               :orig-id id
+                                                               :result result)))
+                    (msgid (whatscl::send-simple-text-message conn wa-jid body callback)))
+               (insert-user-message uid id msgid)))))))))
 
 (defun whatsxmpp-load-users (comp)
   (with-component-data-lock (comp)
@@ -1155,6 +1290,8 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                                 :upload-component-name upload-name)))
         (on :text-message ret (lambda (&rest args)
                                 (apply #'whatsxmpp-message-handler ret args)))
+        (on :message-marker ret (lambda (&rest args)
+                                  (apply #'whatsxmpp-marker-handler ret args)))
         (on :presence-subscribe ret (lambda (&rest args)
                                       (apply #'whatsxmpp-presence-subscribe-handler ret args)))
         (register-whatsxmpp-handlers ret)
