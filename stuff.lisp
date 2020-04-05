@@ -17,6 +17,9 @@
 (defparameter +roster-exchange-ns+ "http://jabber.org/protocol/rosterx")
 (defparameter +delivery-receipts-ns+ "urn:xmpp:receipts")
 
+(defvar *xmpp-debug-io* (make-broadcast-stream))
+(defvar *xmpp-debug-out* (make-synonym-stream '*xmpp-debug-io*))
+
 (defclass xmpp-component (event-emitter)
   ((socket
     :initarg :socket
@@ -77,7 +80,7 @@
 
 (defmethod sax:start-document ((s xmpp-source))
   (declare (ignore s))
-  (format *debug-io* "~&XMPP --> [document started]~%"))
+  (format *xmpp-debug-out* "~&XMPP --> [document started]~%"))
 
 (defmethod sax:start-element ((s xmpp-source) namespace-uri local-name qname attributes)
   (with-accessors ((depth source-depth) (comp source-component) (handlers cxml:broadcast-handler-handlers)) s
@@ -88,15 +91,15 @@
         (let ((stream-id-attr (find-if #'local-name-is-id attributes)))
           (when (not stream-id-attr)
             (error "Server didn't send a stream ID"))
-          (format *debug-io* "~&XMPP --> [stream started, ID ~A]~%" (sax:attribute-value stream-id-attr))
+          (format *xmpp-debug-out* "~&XMPP --> [stream started, ID ~A]~%" (sax:attribute-value stream-id-attr))
           (with-component-data-lock (comp)
             (setf (component-stream-id comp) (sax:attribute-value stream-id-attr))
             (emit :stream-started comp))
           (return-from sax:start-element))))
     (when (eql depth 2)
       (let ((dom-builder (cxml-dom:make-dom-builder)))
-        (format *debug-io* "~&XMPP --> ")
-        (setf handlers (list (cxml:make-character-stream-sink *debug-io*) dom-builder))
+        (format *xmpp-debug-out* "~&XMPP --> ")
+        (setf handlers (list (cxml:make-character-stream-sink *xmpp-debug-out*) dom-builder))
         (sax:start-document dom-builder)))
     (call-next-method s namespace-uri local-name qname attributes)))
 
@@ -112,7 +115,7 @@
              (dom-builder (second handlers))
              (stanza (sax:end-document dom-builder)))
         (sax:end-document debug-sink)
-        (terpri *debug-io*)
+        (terpri *xmpp-debug-out*)
         (setf handlers nil)
         (emit :raw-stanza comp stanza)))))
 
@@ -123,7 +126,7 @@
 
 (defmethod sax:start-document ((s xmpp-sink))
   (declare (ignore s))
-  (format *debug-io* "~&XMPP <-- "))
+  (format *xmpp-debug-out* "~&XMPP <-- "))
 
 (defmethod sax:end-element ((s xmpp-sink) namespace-uri local-name qname)
   (if (and (sink-open s) (equal local-name "stream"))
@@ -134,7 +137,7 @@
       ;; bit of the opening tag.
       (sax:characters s "")
       (call-next-method s namespace-uri local-name qname))
-  (terpri *debug-io*))
+  (terpri *xmpp-debug-out*))
 
 (defun close-xmpp-component (comp)
   (bt:with-recursive-lock-held ((component-socket-lock comp))
@@ -147,7 +150,7 @@
 
 (defun make-xmpp-sink (socket)
   (let ((ret (cxml:make-broadcast-handler
-              (cxml:make-character-stream-sink *debug-io*)
+              (cxml:make-character-stream-sink *xmpp-debug-out*)
               (cxml:make-octet-stream-sink socket))))
     (change-class ret 'xmpp-sink)
     ret))
@@ -410,7 +413,7 @@
                       :text text))))
 
 (defun handle-connection-complete (comp)
-  (format *debug-io* "Connection complete! \o/")
+  (format *debug-io* "Connection complete! \\o/")
   (emit :connected comp))
 
 (defun send-stanza-error (comp &key id to from e stanza-type)
@@ -813,7 +816,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
       (update-session-data jid sessdata)
       (admin-msg comp jid status)
       (admin-presence comp jid status)
-      (format *debug-io* "~&ws-connected: ~A~%" jid))))
+      (format *debug-io* "~&ws-connected: ~A (as ~A)~%" jid wa-jid))))
 
 (defun wa-handle-error-status-code (comp conn jid err)
   (with-wa-handler-context (comp conn jid)
