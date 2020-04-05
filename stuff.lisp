@@ -1483,6 +1483,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
   "Hacky main() function for running this in 'the real world' (outside emacs)"
   (let ((*default-database-path* (elt sb-ext:*posix-argv* 1)))
     (format t "Using database at ~A~%" *default-database-path*)
+    (setf swank:*configure-emacs-indentation* nil)
     (swank:create-server :dont-close t)
     (setf *debugger-hook* (lambda (condition hook)
                             (declare (ignore hook))
@@ -1493,6 +1494,8 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
     (on :error *comp* (lambda (e)
                         (format t "ERROR: ~A~%" e)
                         (sb-ext:exit :code 1 :abort t)))
+    ;; don't pretty-print stuff with newlines
+    (setf *print-right-margin* most-positive-fixnum)
     ;; We don't have anything better to do, so let's wait on a condition
     ;; variable that'll never wake up.
     (let ((lock (bt:make-lock))
@@ -1500,3 +1503,14 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
       (loop
         (bt:with-lock-held (lock)
           (bt:condition-wait condvar lock))))))
+
+#+sbcl
+(uiop:register-image-dump-hook
+ (lambda ()
+   (swank-loader:init
+    :load-contribs t
+    :reload t)
+   (swank:swank-require '("SWANK-FANCY-INSPECTOR" "SWANK-FUZZY" "SWANK-MACROSTEP" "SWANK-PRESENTATIONS"
+                          "SWANK-REPL" "SWANK-PACKAGE-FU" "SWANK-TRACE-DIALOG" "SWANK-INDENTATION"
+                          "SWANK-SBCL-EXTS" "SWANK-ARGLISTS" "SWANK-C-P-C" "SWANK-UTIL" "SB-CLTL2"
+                          "SB-INTROSPECT" "SB-BSD-SOCKETS" "SB-POSIX" "ASDF" "asdf" "UIOP" "uiop"))))
