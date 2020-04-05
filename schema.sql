@@ -30,3 +30,9 @@ CREATE TABLE user_messages (
        wa_id VARCHAR NOT NULL,
        UNIQUE(user_id, wa_id)
 );
+
+CREATE TABLE avatar_data (
+       avatar_url VARCHAR NOT NULL PRIMARY KEY,
+       sha1 VARCHAR NOT NULL,
+       image BLOB NOT NULL
+);

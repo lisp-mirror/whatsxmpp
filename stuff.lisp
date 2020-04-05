@@ -12,6 +12,7 @@
 (defparameter +chat-markers-ns+ "urn:xmpp:chat-markers:0")
 (defparameter +delivery-delay-ns+ "urn:xmpp:delay")
 (defparameter +vcard-temp-ns+ "vcard-temp")
+(defparameter +vcard-avatar-ns+ "vcard-temp:x:update")
 (defparameter +nick-ns+ "http://jabber.org/protocol/nick")
 (defparameter +roster-exchange-ns+ "http://jabber.org/protocol/rosterx")
 (defparameter +delivery-receipts-ns+ "urn:xmpp:receipts")
@@ -202,13 +203,16 @@
         (cxml:attribute "xmlns" +component-ns+)
         (cxml:attribute "to" (component-name comp))))))
 
-(defun sha1-hex (str)
-  "Returns the SHA1 of STR, a string, in lowercase hex."
+(defun sha1-octets (buf)
+  "Returns the SHA1 of BUF, a vector of octets, in lowercase hex."
   (format nil "~(~{~2,'0X~}~)"
           (coerce
-           (ironclad:digest-sequence :sha1
-                                     (babel:string-to-octets str))
+           (ironclad:digest-sequence :sha1 buf)
            'list)))
+
+(defun sha1-hex (str)
+  "Returns the SHA1 of STR, a string, in lowercase hex."
+  (sha1-octets (babel:string-to-octets str)))
 
 (defun component-stream-started (comp)
   (with-component-xml-output (comp)
@@ -260,12 +264,13 @@
                  :id ,id)
      ,@body))
 
-(defmacro with-presence ((comp to &key type from) &body body)
+(defmacro with-presence ((comp to &key type from id) &body body)
   "Send a presence stanza (of type TYPE) on the COMP component. Semantics the same as WITH-IQ, except for the fact that presence stanzas don't normally prompt a response."
   `(with-stanza (,comp "presence"
                  :type ,type
                  :to ,to
-                 :from ,from)
+                 :from ,from
+                 :id ,id)
      ,@body))
 
 (defun get-node-named (nodes name)
@@ -535,7 +540,7 @@
              ((equal type "probe") :presence-probe)
              ((equal type "unavailable") :presence-unavailable)
              (t :presence))))
-    (emit event-name comp :from from :to to :stanza stanza)))
+    (emit event-name comp :from from :to to :type type :stanza stanza)))
 
 (defun handle-message (comp stanza)
   "Handles a message STANZA for component COMP."
@@ -898,8 +903,75 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
       (with-bound-columns (name notify) get-stmt
         (or name notify (substitute #\+ #\u localpart))))))
 
+(defun get-avatar-data (avatar-url)
+  "Fetches AVATAR-URL, using the database as a cache. Returns the SHA1 hash (lowercase) of the avatar data as first argument, and the actual octets as second."
+  (with-prepared-statements
+      ((get-stmt "SELECT sha1, image FROM avatar_data WHERE avatar_url = ?")
+       (insert-stmt "INSERT INTO avatar_data (avatar_url, sha1, image) VALUES (?, ?, ?)"))
+    (bind-parameters get-stmt avatar-url)
+    (if (sqlite:step-statement get-stmt)
+        (with-bound-columns (sha1 image) get-stmt
+          (values sha1 image))
+        (progn
+          (format *debug-io* "~&fetching avatar url: ~A~%" avatar-url)
+          (multiple-value-bind (data status-code)
+              (drakma:http-request avatar-url)
+            (format *debug-io* "~&fetch resulted in status ~A~%" status-code)
+            (when (eql status-code 200)
+              (let ((sha1 (sha1-octets data)))
+                (bind-parameters insert-stmt avatar-url sha1 data)
+                (sqlite:step-statement insert-stmt)
+                (values sha1 data))))))))
+
+(defun get-contact-avatar-data (uid localpart)
+  "Get a set of avatar data (returned by GET-AVATAR-DATA) for LOCALPART, a possible contact for the user with ID UID."
+  (with-prepared-statements
+      ((get-stmt "SELECT avatar_url FROM user_contacts WHERE user_id = ? AND wa_jid = ?"))
+    (bind-parameters get-stmt uid localpart)
+    (when (sqlite:step-statement get-stmt)
+      (with-bound-columns (avatar-url) get-stmt
+        (when (and avatar-url (> (length avatar-url) 0) (not (equal avatar-url "NO-AVATAR")))
+          (get-avatar-data avatar-url))))))
+
+(defun handle-wa-contact-avatar (comp conn jid localpart &key noretry)
+  "Check whether we need to request an avatar for LOCALPART, or send an update out about one."
+  (when (uiop:string-prefix-p "other-" localpart)
+    (return-from handle-wa-contact-avatar))
+  (let ((uid (get-user-id jid)))
+    (assert uid () "No user ID for ~A!" jid)
+    (with-prepared-statements
+        ((get-stmt "SELECT avatar_url FROM user_contacts WHERE user_id = ? AND wa_jid = ?"))
+      (bind-parameters get-stmt uid localpart)
+      (unless (sqlite:step-statement get-stmt)
+        (error "No contact with localpart ~A exists!" localpart))
+      (with-bound-columns (avatar-url) get-stmt
+        (if (and avatar-url (> (length avatar-url) 0))
+            (with-presence (comp jid
+                            :from (concatenate 'string
+                                               localpart
+                                               "@"
+                                               (component-name comp)))
+              (cxml:with-element "x"
+                (cxml:attribute "xmlns" +vcard-avatar-ns+)
+                (if (equal avatar-url "NO-AVATAR")
+                    (cxml:with-element "photo")
+                    (let ((sha1 (get-avatar-data avatar-url)))
+                      (when sha1
+                        (cxml:with-element "photo"
+                          (cxml:text sha1)))))))
+            (progn
+              (when noretry
+                (warn "Warning: Not retrying failed avatar request for ~A from ~A" localpart jid)
+                (return-from handle-wa-contact-avatar))
+              (format *debug-io* "~&requesting avatar for ~A from ~A~%" localpart jid)
+              (whatscl::get-profile-picture conn (whatsxmpp-localpart-to-wa-jid localpart)
+                                            (lambda (conn result)
+                                              (wa-handle-avatar-result comp conn jid localpart result)))))))))
+
 (defun handle-wa-contact-presence (comp jid localpart)
   "Check if we need to send out presence subscriptions for LOCALPART."
+  (when (uiop:string-prefix-p "other-" localpart)
+    (return-from handle-wa-contact-presence))
   (let ((uid (get-user-id jid)))
     (assert uid () "No user ID for ~A!" jid)
     (with-prepared-statements
@@ -950,7 +1022,16 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
       (with-bound-columns (wid) get-stmt
         wid))))
 
-(defun add-wa-contact (comp jid contact)
+(defun get-contact-localparts (uid)
+  "Get a list of contact localparts for the user with ID UID."
+  (with-prepared-statements
+      ((get-stmt "SELECT wa_jid FROM user_contacts WHERE user_id = ?"))
+    (bind-parameters get-stmt uid)
+    (loop
+      while (sqlite:step-statement get-stmt)
+      collect (with-bound-columns (localpart) get-stmt localpart))))
+
+(defun add-wa-contact (comp conn jid contact)
   "Adds the WHATSCL:CONTACT to the list of JID's contacts, or updates it if it already exists."
   (with-accessors ((ct-jid whatscl::contact-jid)
                    (ct-notify whatscl::contact-notify)
@@ -958,6 +1039,8 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
       contact
     (let ((uid (get-user-id jid))
           (wx-localpart (wa-jid-to-whatsxmpp-localpart ct-jid)))
+      (unless (uiop:string-prefix-p "u" wx-localpart)
+        (return-from add-wa-contact))
       (assert uid () "No user ID for ~A!" jid)
       (with-prepared-statements
           ((get-stmt "SELECT id, name, notify FROM user_contacts WHERE user_id = ? AND wa_jid = ?")
@@ -973,19 +1056,20 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
             (progn
               (bind-parameters insert-stmt uid wx-localpart ct-name ct-notify)
               (sqlite:step-statement insert-stmt)))
-        (handle-wa-contact-presence comp jid wx-localpart)))))
+        (handle-wa-contact-presence comp jid wx-localpart)
+        (handle-wa-contact-avatar comp conn jid wx-localpart)))))
 
 (defun wa-handle-contacts (comp conn jid contacts)
   (with-wa-handler-context (comp conn jid)
     (format *debug-io* "~&got ~A contacts for ~A~%" (length contacts) jid)
     (loop
       for contact in contacts
-      do (add-wa-contact comp jid contact))))
+      do (add-wa-contact comp conn jid contact))))
 
 (defun wa-handle-contact (comp conn jid contact)
   (with-wa-handler-context (comp conn jid)
     (format *debug-io* "~&got contact ~A for ~A~%" contact jid)
-    (add-wa-contact comp jid contact)))
+    (add-wa-contact comp conn jid contact)))
 
 (defun wa-handle-message-ack (comp conn jid &key id ack from to &allow-other-keys)
   (with-wa-handler-context (comp conn jid)
@@ -1032,6 +1116,17 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                                               :defined-condition "recipient-unavailable"
                                               :type "modify"
                                               :text (write-to-string e)))))))
+
+(defun wa-handle-avatar-result (comp conn jid for-localpart result)
+  (with-wa-handler-context (comp conn jid)
+    (format *debug-io* "~&avatar result for ~A from ~A: ~A~%" for-localpart jid result)
+    (let ((avatar-url (or result "NO-AVATAR"))
+          (uid (get-user-id jid)))
+      (with-prepared-statements
+          ((update-stmt "UPDATE user_contacts SET avatar_url = ? WHERE user_id = ? AND wa_jid = ?"))
+        (bind-parameters update-stmt avatar-url uid for-localpart)
+        (sqlite:step-statement update-stmt)
+        (handle-wa-contact-avatar comp conn jid for-localpart :noretry t)))))
 
 (defun bind-wa-handlers (comp conn jid)
   (on :ws-open conn (lambda () (wa-handle-ws-open comp conn jid)))
@@ -1088,8 +1183,28 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
           (insert-stmt "INSERT INTO users (jid) VALUES (?) ON CONFLICT (jid) DO UPDATE SET session_data = ''")
         (bind-parameters insert-stmt stripped)
         (sqlite:step-statement insert-stmt))
+      (with-presence (comp stripped
+                      :type "subscribe"
+                      :from (admin-jid comp))
+        (cxml:with-element "status"
+          (cxml:text "Please add the whatsxmpp admin user to your roster; if you don't, things will probably break in various fun ways.")
+          (cxml:with-element "nick"
+            (cxml:attribute "xmlns" +nick-ns+)
+            (cxml:text "whatsxmpp admin"))))
       (admin-msg comp jid "WhatsApp connection should begin shortly...")
       (handle-setup-user comp stripped))))
+
+(defun get-admin-status (comp jid)
+  "Get the status text of the admin user for the user with ID JID. Returns a <show/> value as second value."
+  (multiple-value-bind (conn exists-p)
+      (gethash jid (component-whatsapps comp))
+    (cond
+      ((and conn (whatscl::wac-jid conn))
+       (format nil "Connected and logged in as ~A."
+               (whatscl::wac-jid conn)))
+      (conn (values "Connected, but not logged in." "away"))
+      (exists-p (values "Temporarily disconnected." "away"))
+      (t (values "Disconnected (automatic reconnections disabled)." "xa")))))
 
 (defun handle-admin-command (comp from body uid)
   "Handles an admin command sent to COMP."
@@ -1109,16 +1224,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
         ((not uid)
          (reply "You're not registered with this bridge. Try `register` or `help`."))
         ((equal body "status")
-         (multiple-value-bind (conn exists-p)
-             (gethash stripped (component-whatsapps comp))
-           (reply
-            (cond
-              ((and conn (whatscl::wac-jid conn))
-               (format nil "Connected and logged in as ~A."
-                       (whatscl::wac-jid conn)))
-              (conn "Connected, but not logged in.")
-              (exists-p "Temporarily disconnected.")
-              (t "Disconnected (automatic reconnections disabled).")))))
+         (reply (get-admin-status comp stripped)))
         ((equal body "connect")
          (handle-setup-user comp stripped))
         ((equal body "stop")
@@ -1135,8 +1241,8 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
   (format *debug-io* "~&vcard-temp: ~A (from ~A)~%" to from)
   (with-component-data-lock (comp)
     (let* ((uid (get-user-id from))
-           (to-localpart (nth-value 1 (parse-jid to)))
-           (name
+           (to-localpart (nth-value 1 (parse-jid to))))
+      (multiple-value-bind (name avatar-data)
              (cond
                ((equal to-localpart "admin")
                 "whatsxmpp admin")
@@ -1152,22 +1258,75 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                            :defined-condition "item-not-found"
                            :text "No vCard for that JID is available at this time."
                            :type "modify"))
-                  name)))))
-      `((cxml:with-element "vCard"
-          (cxml:attribute "xmlns" +vcard-temp-ns+)
-          (cxml:with-element "FN"
-            (cxml:text ,name))
-          (cxml:with-element "NICKNAME"
-            (cxml:text ,name)))))))
+                  (values name
+                          (nth-value 1 (get-contact-avatar-data uid to-localpart))))))
+        `((cxml:with-element "vCard"
+            (cxml:attribute "xmlns" +vcard-temp-ns+)
+            (cxml:with-element "FN"
+              (cxml:text ,name))
+            (cxml:with-element "NICKNAME"
+              (cxml:text ,name))
+            ,(when avatar-data
+               `(cxml:with-element "PHOTO"
+                  (cxml:with-element "TYPE"
+                    (cxml:text "image/jpeg"))
+                  (cxml:with-element "BINVAL"
+                    (cxml:text ,(qbase64:encode-bytes avatar-data)))))))))))
+
+(defun whatsxmpp-presence-handler (comp &key from to type &allow-other-keys)
+  "Handles a presence broadcast."
+  (unless (or (not type) (eql (length type) 0))
+    (return-from whatsxmpp-presence-handler))
+  (with-component-data-lock (comp)
+    (multiple-value-bind (to-hostname to-localpart)
+        (parse-jid to)
+      (declare (ignore to-hostname))
+      (format *debug-io* "~&presence to: ~A from: ~A~%" to from)
+      (when (equal to-localpart "admin")
+        (let* ((stripped (strip-resource from))
+               (conn (gethash stripped (component-whatsapps comp)))
+               (uid (get-user-id stripped)))
+          (unless uid
+            (return-from whatsxmpp-presence-handler))
+          (multiple-value-bind (admin-status admin-show)
+              (get-admin-status comp stripped)
+            (format *debug-io* "~&sending presences of everyone to ~A~%" from)
+            (admin-presence comp from admin-status admin-show)
+            (when conn
+              (loop
+                for localpart in (get-contact-localparts uid)
+                do (handle-wa-contact-avatar comp conn stripped localpart)))))))))
+
+(defun whatsxmpp-presence-probe-handler (comp &key from to id &allow-other-keys)
+  "Handles presence probe requests."
+  (with-component-data-lock (comp)
+    (multiple-value-bind (to-hostname to-localpart)
+        (parse-jid to)
+      (declare (ignore to-hostname))
+      (format *debug-io* "~&presence probe to: ~A from: ~A~%" to from)
+      (let* ((stripped (strip-resource from))
+             (uid (get-user-id stripped))
+             (conn (gethash stripped (component-whatsapps comp))))
+        (flet ((respond-with-unavailable ()
+                 (with-presence (comp from
+                                 :from to
+                                 :type "unavailable"
+                                 :id id))))
+          (cond
+            ((equal to-localpart "admin")
+             (multiple-value-bind (admin-status admin-show)
+                 (get-admin-status comp stripped)
+               (admin-presence comp from admin-status admin-show)))
+            ((or (not uid) (not conn)) (respond-with-unavailable))
+            ((get-contact-name uid to-localpart)
+             (handle-wa-contact-avatar comp conn stripped to-localpart))
+            (t (respond-with-unavailable))))))))
 
 (defun whatsxmpp-presence-subscribe-handler (comp &key from to id &allow-other-keys)
   "Handles a presence subscription request."
   (with-component-data-lock (comp)
     (multiple-value-bind (to-hostname to-localpart)
         (parse-jid to)
-      (unless (equal to-hostname (component-name comp))
-        (warn "Got presence subscribe addressed to ~A!" to)
-        (return-from whatsxmpp-presence-subscribe-handler))
       (format *debug-io* "~&presence subscribe from: ~A~%" from)
       (if (or (equal to-localpart "admin") (whatsxmpp-localpart-to-wa-jid to-localpart))
           (with-presence (comp (strip-resource from)
@@ -1186,9 +1345,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
   (with-component-data-lock (comp)
     (multiple-value-bind (to-hostname to-localpart)
         (parse-jid to)
-      (unless (equal to-hostname (component-name comp))
-        (warn "Got message addressed to ~A!" to)
-        (return-from whatsxmpp-marker-handler))
+      (declare (ignore to-hostname))
       (format *debug-io* "~&marker: ~A on ~A from ~A~%" type marker-id from)
       (unless (equal type "displayed")
         (return-from whatsxmpp-marker-handler))
@@ -1198,6 +1355,8 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
              (wa-jid (whatsxmpp-localpart-to-wa-jid to-localpart)))
         (unless uid
           (warn "Got marker for user that isn't registered")
+          (return-from whatsxmpp-marker-handler))
+        (unless wa-jid
           (return-from whatsxmpp-marker-handler))
         (unless conn
           (warn "Can't send marker, since user connection is offline")
@@ -1221,9 +1380,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
   (with-component-data-lock (comp)
     (multiple-value-bind (to-hostname to-localpart)
         (parse-jid to)
-      (unless (equal to-hostname (component-name comp))
-        (warn "Got message addressed to ~A!" to)
-        (return-from whatsxmpp-message-handler))
+      (declare (ignore to-hostname))
       (format *debug-io* "~&message from: ~A~%" from)
       (let* ((stripped (strip-resource from))
              (uid (get-user-id stripped))
@@ -1294,6 +1451,10 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                                   (apply #'whatsxmpp-marker-handler ret args)))
         (on :presence-subscribe ret (lambda (&rest args)
                                       (apply #'whatsxmpp-presence-subscribe-handler ret args)))
+        (on :presence-probe ret (lambda (&rest args)
+                                  (apply #'whatsxmpp-presence-probe-handler ret args)))
+        (on :presence ret (lambda (&rest args)
+                            (apply #'whatsxmpp-presence-handler ret args)))
         (register-whatsxmpp-handlers ret)
         (whatsxmpp-load-users ret)
         (setf (component-reconnect-timer ret) (trivial-timers:make-timer

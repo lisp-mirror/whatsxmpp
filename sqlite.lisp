@@ -43,7 +43,7 @@ In other words, prepares STATEMENT once, then returns the prepared statement aft
   "Evaluates FORMS, binding a prepared statement with SQL text STATEMENT to NAME, and ensuring it is reset when control is transferred."
   `(bt:with-recursive-lock-held (*db-lock*)
      (let ((,name (prepared-statement ,statement)))
-       (prog1
+       (multiple-value-prog1
            (unwind-protect
                 (progn ,@forms)
              (ignore-errors (sqlite:reset-statement ,name)))))))
@@ -56,7 +56,7 @@ In other words, prepares STATEMENT once, then returns the prepared statement aft
                            collect `(ignore-errors (sqlite:reset-statement ,name)))))
     `(bt:with-recursive-lock-held (*db-lock*)
        (let (,@let-forms)
-         (prog1
+         (multiple-value-prog1
              (unwind-protect
                   (progn ,@forms))
            (ignore-errors (progn ,@reset-forms)))))))
