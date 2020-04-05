@@ -178,9 +178,6 @@
         (cxml:parse fucking-stream source
                     :recode t)
       (error (e)
-        (with-simple-restart
-            (continue "Continue execution.")
-          (invoke-debugger e))
         (format *debug-io* "~&Component listen thread failed: ~A~%" e)
         (emit :error comp e)))))
 
@@ -483,9 +480,7 @@
                                                 :defined-condition "internal-server-error"
                                                 :text (write-to-string e)
                                                 :type "cancel"))
-          (with-simple-restart
-              (continue "Continue execution.")
-            (invoke-debugger e)))))))
+          (warn "IQ handler for ~A failed: ~A" handler e))))))
 
 (defun handle-iq-get (comp id from stanza)
   "Handles an IQ-get STANZA for component COMP."
@@ -733,8 +728,7 @@ Commands:
                         (cxml:text get-url))))
                   (admin-msg comp jid "(Code expired? Be faster next time. Get a new one with `connect`.)")))))))
        (t (e)
-          (admin-msg comp jid (format nil "Failed to upload QR code!~%Report the following error to the bridge admin: `~A`" e))
-          (invoke-debugger e))))))
+          (admin-msg comp jid (format nil "Failed to upload QR code!~%Report the following error to the bridge admin: `~A`" e)))))))
 
 (defparameter *user-jid-scanner*
   (cl-ppcre:create-scanner "u([0-9]+)"))
