@@ -173,16 +173,22 @@
   ;; and specify the speed manually, and then it works.
   ;;
   ;; Wouldn't it be nice if people documented this sort of thing?
+  ;;
+  ;; ### Part II: The Fucking Stream Strikes Back ###
+  ;; ...and, after another hour of debugging, I found out you have to specify the `name'
+  ;; arg, otherwise it breaks -- but ONLY randomly and once you decide to deploy it
+  ;; in production, of course.
   (let ((source (make-xmpp-source comp))
         (fucking-stream (cxml:make-xstream (component-socket comp)
                                            :speed 1 ; FFFFFFFFUUUUUUUU
+                                           :name (cxml::make-stream-name ; AAAARGH
+                                                  :entity-name "main document"
+                                                  :entity-kind :main
+                                                  :uri nil)
+                                           :name "XMPP server stream"
                                            :initial-speed 1)))
-    (handler-case
-        (cxml:parse fucking-stream source
-                    :recode t)
-      (error (e)
-        (format *debug-io* "~&Component listen thread failed: ~A~%" e)
-        (emit :error comp e)))))
+    (cxml:parse fucking-stream source
+                :recode t)))
 
 (defmacro with-component-xml-output ((comp) &body body)
   (let ((ret-sym (gensym)))
@@ -1479,6 +1485,12 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
         ret))))
 
 #+sbcl
+(defun report-error-and-die (err)
+  (format t "ERROR: ~A~%Backtrace: ~A~%" err
+          (trivial-backtrace:print-backtrace err))
+  (sb-ext:exit :code 1 :abort t))
+
+#+sbcl
 (defun main ()
   "Hacky main() function for running this in 'the real world' (outside emacs)"
   (let ((*default-database-path* (elt sb-ext:*posix-argv* 1)))
@@ -1486,14 +1498,11 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
     (setf swank:*configure-emacs-indentation* nil)
     (swank:create-server :dont-close t)
     (setf *debugger-hook* (lambda (condition hook)
-                            (declare (ignore hook))
-                            (format t "ERROR: ~A~%" condition)
-                            (sb-ext:exit :code 1 :abort t)))
+                            (report-error-and-die condition)))
     (format t "*mario voice* Here we go!~%")
     (defparameter *comp* (whatsxmpp-init))
     (on :error *comp* (lambda (e)
-                        (format t "ERROR: ~A~%" e)
-                        (sb-ext:exit :code 1 :abort t)))
+                        (report-error-and-die e)))
     ;; don't pretty-print stuff with newlines
     (setf *print-right-margin* most-positive-fixnum)
     ;; We don't have anything better to do, so let's wait on a condition
