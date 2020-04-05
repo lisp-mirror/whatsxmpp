@@ -1487,9 +1487,16 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
     (setf *debugger-hook* (lambda (condition hook)
                             (declare (ignore hook))
                             (format t "ERROR: ~A~%" condition)
-                            (sb-ext:exit :code 1)))
+                            (sb-ext:exit :code 1 :abort t)))
     (format t "*mario voice* Here we go!~%")
     (defparameter *comp* (whatsxmpp-init))
     (on :error *comp* (lambda (e)
                         (format t "ERROR: ~A~%" e)
-                        (sb-ext:exit :code 1)))))
+                        (sb-ext:exit :code 1 :abort t)))
+    ;; We don't have anything better to do, so let's wait on a condition
+    ;; variable that'll never wake up.
+    (let ((lock (bt:make-lock))
+          (condvar (bt:make-condition-variable)))
+      (loop
+        (bt:with-lock-held (lock)
+          (bt:condition-wait condvar lock))))))
