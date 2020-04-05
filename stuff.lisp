@@ -983,8 +983,6 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
             (with-presence (comp jid
                             :type "subscribe"
                             :from from)
-              (cxml:with-element "status"
-                (cxml:text (format nil "I'm ~A from your WhatsApp contacts! (via whatsxmpp)" name-to-use)))
               (cxml:with-element "nick"
                 (cxml:attribute "xmlns" +nick-ns+)
                 (cxml:text name-to-use)))
@@ -1026,7 +1024,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
       collect (with-bound-columns (localpart) get-stmt localpart))))
 
 (defun add-wa-contact (comp conn jid contact)
-  "Adds the WHATSCL:CONTACT to the list of JID's contacts, or updates it if it already exists."
+  "Adds the WHATSCL:CONTACT to the list of JID's contacts, or updates it if it already exists. Returns the contact's localpart."
   (with-accessors ((ct-jid whatscl::contact-jid)
                    (ct-notify whatscl::contact-notify)
                    (ct-name whatscl::contact-name))
@@ -1051,14 +1049,33 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
               (bind-parameters insert-stmt uid wx-localpart ct-name ct-notify)
               (sqlite:step-statement insert-stmt)))
         (handle-wa-contact-presence comp jid wx-localpart)
-        (handle-wa-contact-avatar comp conn jid wx-localpart)))))
+        (handle-wa-contact-avatar comp conn jid wx-localpart)
+        wx-localpart))))
 
 (defun wa-handle-contacts (comp conn jid contacts)
   (with-wa-handler-context (comp conn jid)
     (format *debug-io* "~&got ~A contacts for ~A~%" (length contacts) jid)
-    (loop
-      for contact in contacts
-      do (add-wa-contact comp conn jid contact))))
+    (let ((uid (get-user-id jid))
+          (localparts (loop
+                        for contact in contacts
+                        collect (add-wa-contact comp conn jid contact))))
+      (with-message (comp jid)
+        (cxml:with-element "x"
+          (cxml:attribute "xmlns" +roster-exchange-ns+)
+          (loop
+            for ct-localpart in localparts
+            do (when ct-localpart
+                 (let* ((ct-jid (concatenate 'string
+                                             ct-localpart
+                                             "@"
+                                             (component-name comp)))
+                        (ct-name (get-contact-name uid ct-localpart)))
+                   (cxml:with-element "item"
+                     (cxml:attribute "action" "add")
+                     (cxml:attribute "jid" ct-jid)
+                     (cxml:attribute "name" ct-name)
+                     (cxml:with-element "group"
+                       (cxml:text "WhatsApp")))))))))))
 
 (defun wa-handle-contact (comp conn jid contact)
   (with-wa-handler-context (comp conn jid)
@@ -1321,6 +1338,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
   (with-component-data-lock (comp)
     (multiple-value-bind (to-hostname to-localpart)
         (parse-jid to)
+      (declare (ignore to-hostname))
       (format *debug-io* "~&presence subscribe from: ~A~%" from)
       (if (or (equal to-localpart "admin") (whatsxmpp-localpart-to-wa-jid to-localpart))
           (with-presence (comp (strip-resource from)
@@ -1456,3 +1474,19 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                                                :name "reconnection timer"))
         (on :connected ret (lambda () (wa-resetup-users ret)))
         ret))))
+
+#+sbcl
+(defun main ()
+  "Hacky main() function for running this in 'the real world' (outside emacs)"
+  (let ((*default-database-path* (elt sb-ext:*posix-argv* 1)))
+    (format t "Using database at ~A~%" *default-database-path*)
+    (swank:create-server :dont-close t)
+    (setf *debugger-hook* (lambda (condition hook)
+                            (declare (ignore hook))
+                            (format t "ERROR: ~A~%" condition)
+                            (sb-ext:exit :code 1)))
+    (format t "*mario voice* Here we go!~%")
+    (defparameter *comp* (whatsxmpp-init))
+    (on :error *comp* (lambda (e)
+                        (format t "ERROR: ~A~%" e)
+                        (sb-ext:exit :code 1)))))
