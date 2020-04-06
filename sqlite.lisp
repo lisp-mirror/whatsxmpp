@@ -2,6 +2,8 @@
 
 (defvar *db* nil
   "Connection to the database.")
+(defvar *db-lock* (bt:make-recursive-lock "sqlite3 lock")
+  "Lock for *DB*.")
 (defparameter *default-database-path* "data.sqlite3"
   "Default path to the SQLite database file.")
 (defvar *prepared-statements* nil
@@ -18,11 +20,12 @@
 
 (defun connect-database (&optional (path *default-database-path*))
   "Establish a connection to the database."
-  (setf *db* (sqlite:connect path))
-  (run-pragmas)
-  (loop for sym in *prepared-statements*
-        do (eval `(setf ,sym nil)))
-  (setf *prepared-statements* nil))
+  (bt:with-recursive-lock-held (*db-lock*)
+    (setf *db* (sqlite:connect path))
+    (run-pragmas)
+    (loop for sym in *prepared-statements*
+          do (eval `(setf ,sym nil)))
+    (setf *prepared-statements* nil)))
 
 (defmacro prepared-statement (statement)
   "Caches the creation of a prepared statement with SQL text STATEMENT.
@@ -38,11 +41,12 @@ In other words, prepares STATEMENT once, then returns the prepared statement aft
 
 (defmacro with-prepared-statement ((name statement) &body forms)
   "Evaluates FORMS, binding a prepared statement with SQL text STATEMENT to NAME, and ensuring it is reset when control is transferred."
-  `(let ((,name (prepared-statement ,statement)))
-     (multiple-value-prog1
-         (unwind-protect
-              (progn ,@forms)
-           (ignore-errors (sqlite:reset-statement ,name))))))
+  `(bt:with-recursive-lock-held (*db-lock*)
+     (let ((,name (prepared-statement ,statement)))
+       (multiple-value-prog1
+           (unwind-protect
+                (progn ,@forms)
+             (ignore-errors (sqlite:reset-statement ,name)))))))
 
 (defmacro with-prepared-statements (statements &body forms)
   "Like WITH-PREPARED-STATEMENT, but takes multiple statements."
@@ -50,11 +54,12 @@ In other words, prepares STATEMENT once, then returns the prepared statement aft
                          collect `(,name (prepared-statement ,statement))))
         (reset-forms (loop for (name statement) in statements
                            collect `(ignore-errors (sqlite:reset-statement ,name)))))
-    `(let (,@let-forms)
-       (multiple-value-prog1
-           (unwind-protect
-                (progn ,@forms))
-         (ignore-errors (progn ,@reset-forms))))))
+    `(bt:with-recursive-lock-held (*db-lock*)
+       (let (,@let-forms)
+         (multiple-value-prog1
+             (unwind-protect
+                  (progn ,@forms))
+           (ignore-errors (progn ,@reset-forms)))))))
 
 (defmacro column-values (statement)
   "Returns the values in the current row of the STATEMENT."
