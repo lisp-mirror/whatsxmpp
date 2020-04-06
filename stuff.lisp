@@ -872,12 +872,16 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
       (when (not previous-xmpp-id) ; don't process messages twice
         (when (typep key 'whatscl::message-key-receiving) ; ignore group and self messages
           (when (typep contents 'whatscl::message-contents-text)
-            (let ((text (whatscl::contents-text contents))
-                  (from (concatenate 'string
-                                     (wa-jid-to-whatsxmpp-localpart (whatscl::key-jid key))
-                                     "@"
-                                     (component-name comp)
-                                     "/whatsapp")))
+            (let* ((contents-text (whatscl::contents-text contents))
+                   (qc (whatscl::message-quoted-contents-summary msg))
+                   (text (if qc
+                             (format nil "> ~A~%~A" qc contents-text)
+                             contents-text))
+                   (from (concatenate 'string
+                                      (wa-jid-to-whatsxmpp-localpart (whatscl::key-jid key))
+                                      "@"
+                                      (component-name comp)
+                                      "/whatsapp")))
               (insert-user-message uid xmpp-id wa-id)
               (with-message (comp jid :from from :id xmpp-id)
                 (cxml:with-element "body"
