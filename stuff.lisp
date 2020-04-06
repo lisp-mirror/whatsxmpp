@@ -25,10 +25,10 @@
     :initarg :socket
     :accessor component-socket)
    (socket-lock
-    :initform (bt:make-recursive-lock)
+    :initform (bt:make-recursive-lock "component socket lock")
     :accessor component-socket-lock)
    (data-lock
-    :initform (bt:make-recursive-lock)
+    :initform (bt:make-recursive-lock "component data lock")
     :accessor component-data-lock)
    (sink
     :initarg :sink
