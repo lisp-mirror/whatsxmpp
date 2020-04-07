@@ -209,12 +209,14 @@
         (cxml:attribute "xmlns" +component-ns+)
         (cxml:attribute "to" (component-name comp))))))
 
+(defun octets-to-lowercase-hex (buf)
+  "Formats BUF, a vector of octets, as a lowercase hex string and returns it."
+  (declare (type (vector (unsigned-byte 8)) buf))
+  (format nil "~(~{~2,'0X~}~)" (coerce buf 'list)))
+
 (defun sha1-octets (buf)
   "Returns the SHA1 of BUF, a vector of octets, in lowercase hex."
-  (format nil "~(~{~2,'0X~}~)"
-          (coerce
-           (ironclad:digest-sequence :sha1 buf)
-           'list)))
+  (octets-to-lowercase-hex (ironclad:digest-sequence :sha1 buf)))
 
 (defun sha1-hex (str)
   "Returns the SHA1 of STR, a string, in lowercase hex."
@@ -699,6 +701,57 @@ Commands:
         do (handle-setup-user comp user))
       (trivial-timers:schedule-timer (component-reconnect-timer comp) *reconnect-every-secs*))))
 
+(defun upload-whatsapp-media-file (comp file-info media-type &optional filename)
+  "Downloads the WhatsApp media file specified by FILE-INFO, uploads it via COMP, and returns a promise which resolves to the URL of the uploaded media.
+MEDIA-TYPE is one of (:image :video :audio :document)."
+  (declare (type (member :image :video :audio :document) media-type))
+  (with-component-data-lock (comp)
+    (with-accessors ((url whatscl::file-info-url)
+                     (mime-type whatscl::file-info-mime-type)
+                     (sha256 whatscl::file-info-sha256)
+                     (enc-sha256 whatscl::file-info-enc-sha256)
+                     (length-bytes whatscl::file-info-length-bytes)
+                     (media-key whatscl::file-info-media-key))
+        file-info
+      (let* ((mime-type (first (uiop:split-string mime-type :separator ";")))
+             (extension (or (mimes:mime-file-type mime-type) "what"))
+             (filename (or filename
+                           (concatenate 'string (octets-to-lowercase-hex sha256) "." extension))))
+        (format *debug-io* "~&requesting an upload slot for whatsapp media (type ~A, length ~A): ~A~%" mime-type length-bytes filename)
+        (attach
+         (request-http-upload-slot comp (component-upload-component-name comp)
+                                   filename length-bytes mime-type)
+         (lambda (slot)
+           (destructuring-bind ((put-url . headers) get-url) slot
+             (format *debug-io* "~&got put-url: ~A~%   get-url: ~A~%" put-url get-url)
+             (with-promise (resolve reject)
+               (bt:make-thread
+                (lambda ()
+                  (format *debug-io* "~&fetching whatsapp media url: ~A~%" url)
+                  (handler-bind
+                      ((error #'reject))
+                    (multiple-value-bind (file-data status-code)
+                        (drakma:http-request url)
+                      (unless (eql status-code 200)
+                        (format *debug-io* "~&couldn't fetch whatsapp media! status ~A, body ~A~%" status-code file-data)
+                        (error "Downloading media failed with status ~A" status-code))
+                      (format *debug-io* "~&got ~A bytes, decrypting~%" (length file-data))
+                      (let ((sha256-expected (ironclad:digest-sequence :sha256 file-data))
+                            (decrypted-file (whatscl::decrypt-media-data media-key file-data media-type)))
+                        (unless (equalp enc-sha256 sha256-expected)
+                          (error "Encrypted SHA256 mismatch"))
+                        (multiple-value-bind (body status-code)
+                            (drakma:http-request put-url
+                                                 :additional-headers headers
+                                                 :content-type mime-type
+                                                 :method :put
+                                                 :content decrypted-file)
+                          (unless (and (>= status-code 200) (< status-code 300))
+                            (format *debug-io* "~&upload failed! status ~A, body ~A~%" status-code body)
+                            (error "HTTP upload failed with status ~A" status-code))
+                          (resolve get-url)))))))
+               :name "whatsapp media download thread"))))))))
+
 (defun send-qrcode (comp jid text)
   "Send a QR code containing TEXT to JID."
   (with-component-data-lock (comp)
@@ -871,26 +924,62 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
               wa-id jid key delivery-type previous-xmpp-id)
       (when (not previous-xmpp-id) ; don't process messages twice
         (when (typep key 'whatscl::message-key-receiving) ; ignore group and self messages
-          (when (typep contents 'whatscl::message-contents-text)
-            (let* ((contents-text (whatscl::contents-text contents))
-                   (qc (whatscl::message-quoted-contents-summary msg))
-                   (text (if qc
-                             (format nil "> ~A~%~A" qc contents-text)
-                             contents-text))
-                   (from (concatenate 'string
-                                      (wa-jid-to-whatsxmpp-localpart (whatscl::key-jid key))
-                                      "@"
-                                      (component-name comp)
-                                      "/whatsapp")))
-              (insert-user-message uid xmpp-id wa-id)
-              (with-message (comp jid :from from :id xmpp-id)
-                (cxml:with-element "body"
-                  (cxml:text text))
-                (cxml:with-element "delay"
-                  (cxml:attribute "xmlns" +delivery-delay-ns+)
-                  (cxml:attribute "stamp" (local-time:format-timestring nil ts)))
-                (cxml:with-element "markable"
-                  (cxml:attribute "xmlns" +chat-markers-ns+))))))))))
+          (let* ((qc (whatscl::message-quoted-contents-summary msg))
+                 (from (concatenate 'string
+                                    (wa-jid-to-whatsxmpp-localpart (whatscl::key-jid key))
+                                    "@"
+                                    (component-name comp)
+                                    "/whatsapp")))
+            (symbol-macrolet
+                ((delay-and-markable-elements
+                   (progn
+                     (cxml:with-element "delay"
+                       (cxml:attribute "xmlns" +delivery-delay-ns+)
+                       (cxml:attribute "stamp" (local-time:format-timestring nil ts)))
+                     (cxml:with-element "markable"
+                       (cxml:attribute "xmlns" +chat-markers-ns+)))))
+              (typecase contents
+                (whatscl::message-contents-text
+                 (let* ((contents-text (whatscl::contents-text contents))
+                        (text (format nil "~@[> ~A~%~]~A" qc contents-text)))
+                   (insert-user-message uid xmpp-id wa-id)
+                   (with-message (comp jid :from from :id xmpp-id)
+                     (cxml:with-element "body"
+                       (cxml:text text))
+                     delay-and-markable-elements)))
+                (whatscl::message-contents-file
+                 (let* ((file-info (whatscl::contents-file-info contents))
+                        (media-type (whatscl::get-contents-media-type contents))
+                        (filename (when (typep contents 'whatscl::message-contents-document)
+                                    (whatscl::contents-filename contents)))
+                        (caption (whatscl::contents-caption contents))
+                        (upload-promise (upload-whatsapp-media-file comp file-info media-type filename)))
+                   (catcher
+                    (attach upload-promise
+                            (lambda (get-url)
+                              (with-component-data-lock (comp)
+                                (insert-user-message uid xmpp-id wa-id)
+                                (when (or caption qc)
+                                  (let ((text (format nil "~@[> ~A~%~]~@[~A~]" qc caption)))
+                                    (with-message (comp jid :from from)
+                                      (cxml:with-element "body"
+                                        (cxml:text text))
+                                      delay-and-markable-elements)))
+                                (with-message (comp jid :from from :id xmpp-id)
+                                  (cxml:with-element "body"
+                                    (cxml:text get-url))
+                                  (cxml:with-element "x"
+                                    (cxml:attribute "xmlns" +oob-ns+)
+                                    (cxml:with-element "url"
+                                      (cxml:text get-url))
+                                    delay-and-markable-elements)))))
+                    (error (e)
+                           (with-component-data-lock (comp)
+                             (format *debug-io* "~&whatsapp media message ~A from ~A failed! error: ~A~%"
+                                     wa-id from e)
+                             (admin-msg comp jid
+                                        (format nil "Warning: Failed to process a media message sent to you by ~A:~%    ~A"
+                                                from e)))))))))))))))
 
 (defun get-user-id (jid)
   "Get the user ID of JID, or NIL if none exists."
