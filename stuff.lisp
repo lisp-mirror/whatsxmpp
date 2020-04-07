@@ -1035,6 +1035,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
 
 (defun get-contact-status (uid localpart)
   "Get the contact status text for LOCALPART, a possible contact for the user with ID UID."
+  (declare (type integer uid) (type string localpart))
   (with-prepared-statements
       ((get-stmt "SELECT status FROM user_contacts WHERE user_id = ? AND wa_jid = ?"))
     (bind-parameters get-stmt uid localpart)
@@ -1069,9 +1070,9 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
             (cxml:with-element "x"
               (cxml:attribute "xmlns" +vcard-avatar-ns+)
               (if avatar-sha1
-                  (cxml:with-element "photo")
                   (cxml:with-element "photo"
-                    (cxml:text avatar-sha1)))))
+                    (cxml:text avatar-sha1))
+                  (cxml:with-element "photo"))))
           (progn
             (unless noretry
               (unless avatar-sha1
