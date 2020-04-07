@@ -1020,54 +1020,72 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                 (values sha1 data))))))))
 
 (defun get-contact-avatar-data (uid localpart)
-  "Get a set of avatar data (returned by GET-AVATAR-DATA) for LOCALPART, a possible contact for the user with ID UID."
+  "Get a set of avatar data (returned by GET-AVATAR-DATA) for LOCALPART, a possible contact for the user with ID UID.
+Returns three values: avatar data (as two values), and a generalized boolean specifying whether the user had an avatar (i.e. for no avatar users, returns (VALUES NIL NIL T))"
   (with-prepared-statements
       ((get-stmt "SELECT avatar_url FROM user_contacts WHERE user_id = ? AND wa_jid = ?"))
     (bind-parameters get-stmt uid localpart)
     (when (sqlite:step-statement get-stmt)
       (with-bound-columns (avatar-url) get-stmt
-        (when (and avatar-url (> (length avatar-url) 0) (not (equal avatar-url "NO-AVATAR")))
-          (get-avatar-data avatar-url))))))
+        (values-list (append
+                      (if (and avatar-url (> (length avatar-url) 0) (not (equal avatar-url "NO-AVATAR")))
+                          (multiple-value-list (get-avatar-data avatar-url))
+                          `(nil nil))
+                      (cons (> (length avatar-url) 0) nil)))))))
 
-(defun handle-wa-contact-avatar (comp conn jid localpart &key noretry)
-  "Check whether we need to request an avatar for LOCALPART, or send an update out about one."
-  (when (uiop:string-prefix-p "other-" localpart)
-    (return-from handle-wa-contact-avatar))
-  (let ((uid (get-user-id jid)))
-    (assert uid () "No user ID for ~A!" jid)
-    (with-prepared-statements
-        ((get-stmt "SELECT avatar_url FROM user_contacts WHERE user_id = ? AND wa_jid = ?"))
-      (bind-parameters get-stmt uid localpart)
-      (unless (sqlite:step-statement get-stmt)
-        (error "No contact with localpart ~A exists!" localpart))
-      (with-bound-columns (avatar-url) get-stmt
-        (if (and avatar-url (> (length avatar-url) 0))
-            (with-presence (comp jid
-                            :from (concatenate 'string
-                                               localpart
-                                               "@"
-                                               (component-name comp)))
-              (cxml:with-element "x"
-                (cxml:attribute "xmlns" +vcard-avatar-ns+)
-                (if (equal avatar-url "NO-AVATAR")
-                    (cxml:with-element "photo")
-                    (let ((sha1 (get-avatar-data avatar-url)))
-                      (when sha1
-                        (cxml:with-element "photo"
-                          (cxml:text sha1)))))))
-            (progn
-              (when noretry
-                (warn "Warning: Not retrying failed avatar request for ~A from ~A" localpart jid)
-                (return-from handle-wa-contact-avatar))
-              (format *debug-io* "~&requesting avatar for ~A from ~A~%" localpart jid)
-              (whatscl::get-profile-picture conn (whatsxmpp-localpart-to-wa-jid localpart)
-                                            (lambda (conn result)
-                                              (wa-handle-avatar-result comp conn jid localpart result)))))))))
+(defun get-contact-status (uid localpart)
+  "Get the contact status text for LOCALPART, a possible contact for the user with ID UID."
+  (with-prepared-statements
+      ((get-stmt "SELECT status FROM user_contacts WHERE user_id = ? AND wa_jid = ?"))
+    (bind-parameters get-stmt uid localpart)
+    (when (sqlite:step-statement get-stmt)
+      (with-bound-columns (status) get-stmt
+        status))))
 
-(defun handle-wa-contact-presence (comp jid localpart)
-  "Check if we need to send out presence subscriptions for LOCALPART."
+(defun wa-request-avatar (comp conn jid wa-jid localpart)
+  (format *debug-io* "~&requesting avatar for ~A from ~A~%" localpart jid)
+  (whatscl::get-profile-picture conn wa-jid
+                                (lambda (conn result)
+                                  (wa-handle-avatar-result comp conn jid localpart result))))
+
+(defun handle-wa-contact-presence (comp conn jid localpart &key noretry)
+  "Send out a presence stanza for LOCALPART to JID, or queue requests for that user's status or avatar if they're lacking."
   (when (uiop:string-prefix-p "other-" localpart)
     (return-from handle-wa-contact-presence))
+  (let* ((uid (get-user-id jid))
+         (status (get-contact-status uid localpart))
+         (wa-jid (whatsxmpp-localpart-to-wa-jid localpart)))
+    (multiple-value-bind (avatar-sha1 avatar-data has-avatar-p)
+        (get-contact-avatar-data uid localpart)
+      (declare (ignore avatar-data))
+      (if (and has-avatar-p status)
+          (with-presence (comp jid
+                               :from (concatenate 'string
+                                                  localpart
+                                                  "@"
+                                                  (component-name comp)))
+            (cxml:with-element "status"
+              (cxml:text status))
+            (cxml:with-element "x"
+              (cxml:attribute "xmlns" +vcard-avatar-ns+)
+              (if avatar-sha1
+                  (cxml:with-element "photo")
+                  (cxml:with-element "photo"
+                    (cxml:text avatar-sha1)))))
+          (progn
+            (unless noretry
+              (unless avatar-sha1
+                (wa-request-avatar comp conn jid wa-jid localpart))
+              (unless status
+                (format *debug-io* "~&requesting status for ~A from ~A~%" localpart jid)
+                (whatscl::get-profile-status conn wa-jid
+                                             (lambda (conn result)
+                                               (wa-handle-status-result comp conn jid localpart result))))))))))
+
+(defun handle-wa-contact-presence-subscriptions (comp jid localpart)
+  "Check if we need to send out presence subscriptions for LOCALPART."
+  (when (uiop:string-prefix-p "other-" localpart)
+    (return-from handle-wa-contact-presence-subscriptions))
   (let ((uid (get-user-id jid)))
     (assert uid () "No user ID for ~A!" jid)
     (with-prepared-statements
@@ -1150,8 +1168,8 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
             (progn
               (bind-parameters insert-stmt uid wx-localpart ct-name ct-notify)
               (sqlite:step-statement insert-stmt)))
-        (handle-wa-contact-presence comp jid wx-localpart)
-        (handle-wa-contact-avatar comp conn jid wx-localpart)
+        (handle-wa-contact-presence-subscriptions comp jid wx-localpart)
+        (handle-wa-contact-presence comp conn jid wx-localpart)
         wx-localpart))))
 
 (defun wa-handle-contacts (comp conn jid contacts)
@@ -1239,7 +1257,46 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
           ((update-stmt "UPDATE user_contacts SET avatar_url = ? WHERE user_id = ? AND wa_jid = ?"))
         (bind-parameters update-stmt avatar-url uid for-localpart)
         (sqlite:step-statement update-stmt)
-        (handle-wa-contact-avatar comp conn jid for-localpart :noretry t)))))
+        (handle-wa-contact-presence comp conn jid for-localpart :noretry t)))))
+
+(defun wa-handle-status-result (comp conn jid for-localpart result)
+  (with-wa-handler-context (comp conn jid)
+    (format *debug-io* "~&status result for ~A from ~A: ~A~%" for-localpart jid result)
+    (let ((avatar-url (or result "Status unknown or hidden"))
+          (uid (get-user-id jid)))
+      (with-prepared-statements
+          ((update-stmt "UPDATE user_contacts SET status = ? WHERE user_id = ? AND wa_jid = ?"))
+        (bind-parameters update-stmt avatar-url uid for-localpart)
+        (sqlite:step-statement update-stmt)
+        (handle-wa-contact-presence comp conn jid for-localpart :noretry t)))))
+
+(defun wa-handle-picture-change (comp conn jid for-jid was-removed)
+  (with-wa-handler-context (comp conn jid)
+    (let* ((localpart (wa-jid-to-whatsxmpp-localpart for-jid))
+           (uid (get-user-id jid))
+           (contact-name (get-contact-name uid localpart)))
+      (when contact-name
+        (format *debug-io* "~&picture change notification for ~A from ~A (removed: ~A)~%" localpart jid was-removed)
+        (if was-removed
+            (with-prepared-statements
+                ((update-stmt "UPDATE user_contacts SET avatar_url = ? WHERE user_id = ? AND wa_jid = ?"))
+              (bind-parameters update-stmt "NO-AVATAR" uid localpart)
+              (sqlite:step-statement update-stmt)
+              (handle-wa-contact-presence comp conn jid localpart :noretry t))
+            (wa-request-avatar comp conn jid for-jid localpart))))))
+
+(defun wa-handle-status-change (comp conn jid for-jid status)
+  (with-wa-handler-context (comp conn jid)
+    (let* ((localpart (wa-jid-to-whatsxmpp-localpart for-jid))
+           (uid (get-user-id jid))
+           (contact-name (get-contact-name uid localpart)))
+      (when contact-name
+        (format *debug-io* "~&status change notification for ~A from ~A~%" localpart jid)
+        (with-prepared-statements
+            ((update-stmt "UPDATE user_contacts SET status = ? WHERE user_id = ? AND wa_jid = ?"))
+          (bind-parameters update-stmt status uid localpart)
+          (sqlite:step-statement update-stmt)
+          (handle-wa-contact-presence comp conn jid localpart :noretry t))))))
 
 (defun bind-wa-handlers (comp conn jid)
   (on :ws-open conn (lambda () (wa-handle-ws-open comp conn jid)))
@@ -1256,6 +1313,11 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
   (on :message-ack conn (lambda (&key id ack from to &allow-other-keys)
                           (wa-handle-message-ack comp conn jid
                                                  :id id :ack ack :from from :to to)))
+  (on :picture-change conn (lambda (for-jid removed)
+                             (wa-handle-picture-change comp conn jid for-jid removed)))
+
+  (on :status-change conn (lambda (for-jid status)
+                             (wa-handle-status-change comp conn jid for-jid status)))
   (on :connected conn (lambda (waj) (wa-handle-ws-connected comp conn jid waj))))
 
 (defun handle-setup-user (comp jid)
@@ -1408,7 +1470,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
             (when conn
               (loop
                 for localpart in (get-contact-localparts uid)
-                do (handle-wa-contact-avatar comp conn stripped localpart)))))))))
+                do (handle-wa-contact-presence comp conn stripped localpart)))))))))
 
 (defun whatsxmpp-presence-probe-handler (comp &key from to id &allow-other-keys)
   "Handles presence probe requests."

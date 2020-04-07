@@ -20,7 +20,8 @@ CREATE TABLE user_contacts (
        subscription_state VARCHAR NOT NULL DEFAULT 'none',
        avatar_url VARCHAR,
        name VARCHAR,
-       notify VARCHAR
+       notify VARCHAR,
+       status VARCHAR
 );
 
 CREATE TABLE user_messages (
