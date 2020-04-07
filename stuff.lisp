@@ -1495,7 +1495,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                (admin-presence comp from admin-status admin-show)))
             ((or (not uid) (not conn)) (respond-with-unavailable))
             ((get-contact-name uid to-localpart)
-             (handle-wa-contact-avatar comp conn stripped to-localpart))
+             (handle-wa-contact-presence comp conn stripped to-localpart))
             (t (respond-with-unavailable))))))))
 
 (defun whatsxmpp-presence-subscribe-handler (comp &key from to id &allow-other-keys)
@@ -1641,6 +1641,9 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
         ret))))
 
 #+sbcl
+(defparameter *comp* nil)
+
+#+sbcl
 (defun report-error-and-die (err)
   (format t "ERROR: ~A~%Backtrace: ~A~%" err
           (trivial-backtrace:print-backtrace err))
@@ -1654,9 +1657,10 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
     (setf swank:*configure-emacs-indentation* nil)
     (swank:create-server :dont-close t)
     (setf *debugger-hook* (lambda (condition hook)
+                            (declare (ignore hook))
                             (report-error-and-die condition)))
     (format t "*mario voice* Here we go!~%")
-    (defparameter *comp* (whatsxmpp-init))
+    (setf *comp* (whatsxmpp-init))
     (on :error *comp* (lambda (e)
                         (report-error-and-die e)))
     ;; don't pretty-print stuff with newlines
