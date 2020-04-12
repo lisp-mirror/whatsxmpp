@@ -27,6 +27,11 @@
           do (eval `(setf ,sym nil)))
     (setf *prepared-statements* nil)))
 
+(defmacro with-transaction (&body forms)
+  `(bt:with-recursive-lock-held (*db-lock*)
+     (sqlite:with-transaction *db*
+       ,@forms)))
+
 (defmacro prepared-statement (statement)
   "Caches the creation of a prepared statement with SQL text STATEMENT.
 In other words, prepares STATEMENT once, then returns the prepared statement after that instead of doing that work again."

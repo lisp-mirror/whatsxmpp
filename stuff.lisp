@@ -1,6 +1,5 @@
 (in-package :whatsxmpp)
 
-(defvar *last-stanza*)
 (defparameter +streams-ns+ "urn:ietf:params:xml:ns:xmpp-streams")
 (defparameter +stanzas-ns+ "urn:ietf:params:xml:ns:xmpp-stanzas")
 (defparameter +component-ns+ "jabber:component:accept")
@@ -16,6 +15,9 @@
 (defparameter +nick-ns+ "http://jabber.org/protocol/nick")
 (defparameter +roster-exchange-ns+ "http://jabber.org/protocol/rosterx")
 (defparameter +delivery-receipts-ns+ "urn:xmpp:receipts")
+(defparameter +muc-invite-ns+ "jabber:x:conference")
+(defparameter +muc-stable-id-ns+ "http://jabber.org/protocol/muc#stable_id")
+(defparameter +muc-user-ns+ "http://jabber.org/protocol/muc#user")
 
 (defvar *xmpp-debug-io* (make-broadcast-stream))
 (defvar *xmpp-debug-out* (make-synonym-stream '*xmpp-debug-io*))
@@ -442,7 +444,8 @@
 
 (defmacro disco-identity (name type category)
   `(cxml:with-element "identity"
-     (cxml:attribute "name" ,name)
+     ,@(when name
+       `((cxml:attribute "name" ,name)))
      (cxml:attribute "type" ,type)
      (cxml:attribute "category" ,category)))
 
@@ -489,7 +492,7 @@
                              :from to
                              :e (make-condition 'stanza-error
                                                 :defined-condition "internal-server-error"
-                                                :text (write-to-string e)
+                                                :text (format nil "~A" e)
                                                 :type "cancel"))
           (warn "IQ handler for ~A failed: ~A" handler e))))))
 
@@ -572,7 +575,6 @@
 
 (defun component-stanza (comp stanza)
   "Handles a STANZA received by component COMP."
-  (setf *last-stanza* stanza)
   (let* ((stanza (dom:document-element stanza))
          (tag-name (dom:tag-name stanza)))
     (cond
@@ -603,18 +605,37 @@
     (write-stream-header component)
     component))
 
-(defun disco-info-handler (comp &key to &allow-other-keys)
+(defun disco-info-handler (comp &key to from &allow-other-keys)
   "Handles XEP-0030 disco#info requests."
   (format *debug-io* "~&disco#info: ~A~%" to)
   (with-component-data-lock (comp)
     `((cxml:with-element "query"
         (cxml:attribute "xmlns" ,+disco-info-ns+)
         (disco-feature +disco-info-ns+)
-        ,@(cond
-            ((equal to (component-name comp))
-             `((disco-identity "whatsxmpp bridge" "xmpp" "gateway")
-               (disco-feature ,+muc-ns+)))
-            (t nil))))))
+        ,@(multiple-value-bind
+                (to-hostname to-localpart to-resource)
+              (parse-jid to)
+            (declare (ignore to-hostname))
+            (let* ((uid (get-user-id from))
+                   (user-name (get-contact-name uid to-localpart))
+                   (chat-subject (get-user-chat-subject uid to-localpart)))
+            (cond
+              ((equal to (component-name comp))
+               `((disco-identity "whatsxmpp bridge" "xmpp" "gateway")
+                 (disco-feature ,+muc-ns+)))
+              ((and user-name (not to-resource))
+               `((disco-identity ,user-name "registered" "account")))
+              ((and user-name (equal to-resource "whatsapp"))
+               `((disco-identity "whatsxmpp" "phone" "client")))
+              (chat-subject
+               `((disco-identity ,chat-subject "text" "conference")
+                 (disco-feature ,+muc-ns+)
+                 (disco-feature ,+muc-stable-id-ns+)
+                 (disco-feature "muc_hidden")
+                 (disco-feature "muc_persistent")
+                 (disco-feature "muc_membersonly")
+                 (disco-feature "muc_nonanonymous")))
+              (t nil))))))))
 
 (defun disco-items-handler (comp &key to &allow-other-keys)
   "Handles XEP-0030 disco#items requests."
@@ -727,30 +748,31 @@ MEDIA-TYPE is one of (:image :video :audio :document)."
              (with-promise (resolve reject)
                (bt:make-thread
                 (lambda ()
-                  (format *debug-io* "~&fetching whatsapp media url: ~A~%" url)
-                  (handler-bind
-                      ((error #'reject))
-                    (multiple-value-bind (file-data status-code)
-                        (drakma:http-request url)
-                      (unless (eql status-code 200)
-                        (format *debug-io* "~&couldn't fetch whatsapp media! status ~A, body ~A~%" status-code file-data)
-                        (error "Downloading media failed with status ~A" status-code))
-                      (format *debug-io* "~&got ~A bytes, decrypting~%" (length file-data))
-                      (let ((sha256-expected (ironclad:digest-sequence :sha256 file-data))
-                            (decrypted-file (whatscl::decrypt-media-data media-key file-data media-type)))
-                        (unless (equalp enc-sha256 sha256-expected)
-                          (error "Encrypted SHA256 mismatch"))
-                        (multiple-value-bind (body status-code)
-                            (drakma:http-request put-url
-                                                 :additional-headers headers
-                                                 :content-type mime-type
-                                                 :method :put
-                                                 :content decrypted-file)
-                          (unless (and (>= status-code 200) (< status-code 300))
-                            (format *debug-io* "~&upload failed! status ~A, body ~A~%" status-code body)
-                            (error "HTTP upload failed with status ~A" status-code))
-                          (resolve get-url)))))))
-               :name "whatsapp media download thread"))))))))
+                  (handler-case
+                      (progn
+                        (format *debug-io* "~&fetching whatsapp media url: ~A~%" url)
+                        (multiple-value-bind (file-data status-code)
+                            (drakma:http-request url)
+                          (unless (eql status-code 200)
+                            (format *debug-io* "~&couldn't fetch whatsapp media! status ~A, body ~A~%" status-code file-data)
+                            (error "Downloading media failed with status ~A" status-code))
+                          (format *debug-io* "~&got ~A bytes, decrypting~%" (length file-data))
+                          (let ((sha256-expected (ironclad:digest-sequence :sha256 file-data))
+                                (decrypted-file (whatscl::decrypt-media-data media-key file-data media-type)))
+                            (unless (equalp enc-sha256 sha256-expected)
+                              (error "Encrypted SHA256 mismatch"))
+                            (multiple-value-bind (body status-code)
+                                (drakma:http-request put-url
+                                                     :additional-headers headers
+                                                     :content-type mime-type
+                                                     :method :put
+                                                     :content decrypted-file)
+                              (unless (and (>= status-code 200) (< status-code 300))
+                                (format *debug-io* "~&upload failed! status ~A, body ~A~%" status-code body)
+                                (error "HTTP upload failed with status ~A" status-code))
+                              (resolve get-url)))))
+                    (error (e) (reject e))))
+                :name "whatsapp media download thread")))))))))
 
 (defun send-qrcode (comp jid text)
   "Send a QR code containing TEXT to JID."
@@ -908,45 +930,84 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
     (admin-presence comp jid "Programming error" "xa")
     (remhash jid (component-whatsapps comp))))
 
+(defun wa-message-key-to-stanza-headers (comp conn jid msg-id msg-ts key)
+  "Takes KEY, a WHATSCL::MESSAGE-KEY, and returns (VALUES FROM TOS ID TYPE) [i.e. the values of the 'from', 'to', 'id' and 'type' stanza headers, where TOS is a list of recipients], or NIL if no action should be taken to deliver the message."
+  (let* ((xmpp-id (concatenate 'string
+                               "wa-" msg-id "-" (write-to-string msg-ts)))
+         (uid (get-user-id jid))
+         (previous-xmpp-id (lookup-wa-msgid uid msg-id)))
+    (unless previous-xmpp-id
+      (typecase key
+        (whatscl::message-key-receiving
+         (progn
+           (format *debug-io* "~&direct message ~A for ~A~%" msg-id jid)
+           (values (concatenate 'string
+                                (wa-jid-to-whatsxmpp-localpart (whatscl::key-jid key))
+                                "@"
+                                (component-name comp)
+                                "/whatsapp")
+                   (list jid) xmpp-id "chat")))
+        (whatscl::message-key-group-receiving
+         (let* ((group-localpart (wa-jid-to-whatsxmpp-localpart (whatscl::key-jid key)))
+                (chat-id (get-user-chat-id uid group-localpart))
+                (participant-localpart (wa-jid-to-whatsxmpp-localpart (whatscl::key-participant key))))
+           (format *debug-io* "~&group message ~A in ~A for ~A~%" msg-id group-localpart jid)
+           (if chat-id
+               (let ((from-resource (or (get-participant-resource chat-id participant-localpart)
+                                        participant-localpart))
+                     (recipients (get-user-chat-joined uid group-localpart)))
+                 (if recipients
+                     (values (concatenate 'string
+                                          group-localpart "@" (component-name comp)
+                                          "/" from-resource)
+                             recipients xmpp-id "groupchat")
+                     (warn "None of ~A's resources were joined to group ~A to receive message ~A!" jid group-localpart msg-id)))
+               (progn
+                 (warn "No chat in database for group ~A for ~A -- creating" group-localpart jid)
+                 (add-wa-chat comp conn jid (whatscl::key-jid key))))))
+        (t nil)))))
+
 (defun wa-handle-message (comp conn jid msg delivery-type)
+  (declare (ignore delivery-type))
   (with-wa-handler-context (comp conn jid)
     (let* ((key (whatscl::message-key msg))
            (wa-id (whatscl::message-id msg))
            (contents (whatscl::message-contents msg))
            (wa-ts (whatscl::message-ts msg))
-           (xmpp-id (concatenate 'string
-                                 "wa-" wa-id "-" (write-to-string wa-ts)))
            (uid (get-user-id jid))
-           (previous-xmpp-id (lookup-wa-msgid uid wa-id))
            (local-time:*default-timezone* local-time:+utc-zone+)
            (ts (local-time:unix-to-timestamp wa-ts)))
-      (format *debug-io* "~&message ~A for ~A with key ~A (type ~A) - previous ID ~A~%"
-              wa-id jid key delivery-type previous-xmpp-id)
-      (when (not previous-xmpp-id) ; don't process messages twice
-        (when (typep key 'whatscl::message-key-receiving) ; ignore group and self messages
-          (let* ((qc (whatscl::message-quoted-contents-summary msg))
-                 (from (concatenate 'string
-                                    (wa-jid-to-whatsxmpp-localpart (whatscl::key-jid key))
-                                    "@"
-                                    (component-name comp)
-                                    "/whatsapp")))
-            (symbol-macrolet
-                ((delay-and-markable-elements
-                   (progn
-                     (cxml:with-element "delay"
-                       (cxml:attribute "xmlns" +delivery-delay-ns+)
-                       (cxml:attribute "stamp" (local-time:format-timestring nil ts)))
-                     (cxml:with-element "markable"
-                       (cxml:attribute "xmlns" +chat-markers-ns+)))))
+      (multiple-value-bind
+            (from recipients xmpp-id xmpp-type)
+          (wa-message-key-to-stanza-headers comp conn jid wa-id wa-ts key)
+        (when from
+          (macrolet
+              ((send-message ((&key suppress-insert) &body contents)
+                 (let ((to-sym (gensym)))
+                   `(progn
+                      ;; Referencing lexical variables in a MACROLET! How hacky.
+                      (unless ,suppress-insert
+                        (insert-user-message uid xmpp-id wa-id))
+                      (loop
+                        for ,to-sym in recipients
+                        do (with-message (comp ,to-sym
+                                               :from from
+                                               :id xmpp-id
+                                               :type xmpp-type)
+                             ,@contents
+                             (cxml:with-element "delay"
+                               (cxml:attribute "xmlns" +delivery-delay-ns+)
+                               (cxml:attribute "stamp" (local-time:format-timestring nil ts)))
+                             (cxml:with-element "markable"
+                               (cxml:attribute "xmlns" +chat-markers-ns+))))))))
+            (let* ((qc (whatscl::message-quoted-contents-summary msg)))
               (typecase contents
                 (whatscl::message-contents-text
                  (let* ((contents-text (whatscl::contents-text contents))
                         (text (format nil "~@[> ~A~%~]~A" qc contents-text)))
-                   (insert-user-message uid xmpp-id wa-id)
-                   (with-message (comp jid :from from :id xmpp-id)
-                     (cxml:with-element "body"
-                       (cxml:text text))
-                     delay-and-markable-elements)))
+                   (send-message ()
+                    (cxml:with-element "body"
+                      (cxml:text text)))))
                 (whatscl::message-contents-file
                  (let* ((file-info (whatscl::contents-file-info contents))
                         (media-type (whatscl::get-contents-media-type contents))
@@ -958,21 +1019,18 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                     (attach upload-promise
                             (lambda (get-url)
                               (with-component-data-lock (comp)
-                                (insert-user-message uid xmpp-id wa-id)
                                 (when (or caption qc)
                                   (let ((text (format nil "~@[> ~A~%~]~@[~A~]" qc caption)))
-                                    (with-message (comp jid :from from)
-                                      (cxml:with-element "body"
-                                        (cxml:text text))
-                                      delay-and-markable-elements)))
-                                (with-message (comp jid :from from :id xmpp-id)
-                                  (cxml:with-element "body"
-                                    (cxml:text get-url))
-                                  (cxml:with-element "x"
-                                    (cxml:attribute "xmlns" +oob-ns+)
-                                    (cxml:with-element "url"
-                                      (cxml:text get-url))
-                                    delay-and-markable-elements)))))
+                                    (send-message (:suppress-insert t)
+                                     (cxml:with-element "body"
+                                       (cxml:text text)))))
+                                (send-message ()
+                                 (cxml:with-element "body"
+                                   (cxml:text get-url))
+                                 (cxml:with-element "x"
+                                   (cxml:attribute "xmlns" +oob-ns+)
+                                   (cxml:with-element "url"
+                                     (cxml:text get-url)))))))
                     (error (e)
                            (with-component-data-lock (comp)
                              (format *debug-io* "~&whatsapp media message ~A from ~A failed! error: ~A~%"
@@ -989,6 +1047,53 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
       (bind-parameters get-user stripped)
       (when (sqlite:step-statement get-user)
         (first (column-values get-user))))))
+
+(defun get-user-chat-id (uid localpart)
+  "Get the user chat ID of LOCALPART for UID, or NIL if none exists."
+  (with-prepared-statements
+      ((get-stmt "SELECT id FROM user_chats WHERE user_id = ? AND wa_jid = ?"))
+    (bind-parameters get-stmt uid localpart)
+    (when (sqlite:step-statement get-stmt)
+      (with-bound-columns (id) get-stmt
+        id))))
+
+(defun get-user-chat-subject (uid localpart)
+  "Get the user chat subject of LOCALPART for UID, or NIL if none exists."
+  (with-prepared-statements
+      ((get-stmt "SELECT subject FROM user_chats WHERE user_id = ? AND wa_jid = ?"))
+    (bind-parameters get-stmt uid localpart)
+    (when (sqlite:step-statement get-stmt)
+      (with-bound-columns (subject) get-stmt
+        subject))))
+
+(defun get-user-chat-resource (uid localpart)
+  "Get the user chat resource of LOCALPART for UID, or NIL if none exists."
+  (with-prepared-statements
+      ((get-stmt "SELECT user_resource FROM user_chats WHERE user_id = ? AND wa_jid = ?"))
+    (bind-parameters get-stmt uid localpart)
+    (when (sqlite:step-statement get-stmt)
+      (with-bound-columns (resource) get-stmt
+        (when (and resource (> (length resource) 0))
+          resource)))))
+
+(defun get-participant-resource (chat-id localpart)
+  "Get the participant resource for LOCALPART in CHAT-ID, or NIL if none exists."
+  (with-prepared-statements
+      ((get-stmt "SELECT resource FROM user_chat_members WHERE chat_id = ? AND wa_jid = ?"))
+    (bind-parameters get-stmt chat-id localpart)
+    (when (sqlite:step-statement get-stmt)
+      (with-bound-columns (resource) get-stmt
+        (when (and resource (> (length resource) 0))
+          resource)))))
+
+(defun get-user-chat-joined (uid localpart)
+  "Get the user chat resource of LOCALPART for UID, or NIL if none exists."
+  (with-prepared-statements
+      ((get-stmt "SELECT ucj.jid FROM user_chats AS uc, user_chat_joined AS ucj WHERE uc.user_id = ? AND uc.wa_jid = ? AND uc.id = ucj.chat_id"))
+    (bind-parameters get-stmt uid localpart)
+    (loop
+      while (sqlite:step-statement get-stmt)
+      append (column-values get-stmt))))
 
 (defun get-contact-name (uid localpart)
   "Get a name for LOCALPART, a possible contact for the user with ID UID."
@@ -1051,7 +1156,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
 
 (defun handle-wa-contact-presence (comp conn jid localpart &key noretry)
   "Send out a presence stanza for LOCALPART to JID, or queue requests for that user's status or avatar if they're lacking."
-  (when (uiop:string-prefix-p "other-" localpart)
+  (unless (uiop:string-prefix-p "u" localpart)
     (return-from handle-wa-contact-presence))
   (let* ((uid (get-user-id jid))
          (status (get-contact-status uid localpart))
@@ -1085,7 +1190,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
 
 (defun handle-wa-contact-presence-subscriptions (comp jid localpart)
   "Check if we need to send out presence subscriptions for LOCALPART."
-  (when (uiop:string-prefix-p "other-" localpart)
+  (unless (uiop:string-prefix-p "u" localpart)
     (return-from handle-wa-contact-presence-subscriptions))
   (let ((uid (get-user-id jid)))
     (assert uid () "No user ID for ~A!" jid)
@@ -1115,6 +1220,13 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
   (with-prepared-statements
       ((insert-stmt "INSERT INTO user_messages (user_id, xmpp_id, wa_id) VALUES (?, ?, ?)"))
     (bind-parameters insert-stmt uid xmpp-id wa-id)
+    (sqlite:step-statement insert-stmt)))
+
+(defun insert-user-chat (uid wa-id)
+  "Inserts a user chat with localpart WA-ID into the database for the user with UID."
+  (with-prepared-statements
+      ((insert-stmt "INSERT INTO user_chats (user_id, wa_jid) VALUES (?, ?)"))
+    (bind-parameters insert-stmt uid wa-id)
     (sqlite:step-statement insert-stmt)))
 
 (defun lookup-wa-msgid (uid wa-msgid)
@@ -1203,31 +1315,106 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
     (format *debug-io* "~&got contact ~A for ~A~%" contact jid)
     (add-wa-contact comp conn jid contact)))
 
-(defun wa-handle-message-ack (comp conn jid &key id ack from to &allow-other-keys)
+(defun handle-wa-chat-invitation (comp conn jid uid localpart &key noretry)
+  "Checks to see whether the group chat LOCALPART has any metadata; if not, requests some. If it does, and the user hasn't been invited to that group chat yet, send them an invitation."
+  (unless (uiop:string-prefix-p "g" localpart)
+    (return-from handle-wa-chat-invitation))
+  (with-prepared-statements
+      ((get-stmt "SELECT id, invitation_state FROM user_chats WHERE user_id = ? AND wa_jid = ?")
+       (count-stmt "SELECT COUNT(*) FROM user_chat_members WHERE chat_id = ?")
+       (update-stmt "UPDATE user_chats SET invitation_state = ? WHERE id = ?"))
+    (bind-parameters get-stmt uid localpart)
+    (assert (sqlite:step-statement get-stmt) ()
+            "Chat ~A doesn't exist in database!" localpart)
+    (with-bound-columns (chat-id invitation-state) get-stmt
+      (bind-parameters count-stmt chat-id)
+      (assert (sqlite:step-statement count-stmt))
+      (with-bound-columns (n-members) count-stmt
+        (if (> n-members 0)
+            (when (equal invitation-state "none")
+              (with-message (comp jid)
+                (cxml:with-element "x"
+                  (cxml:attribute "xmlns" +muc-invite-ns+)
+                  (cxml:attribute "jid" (concatenate 'string
+                                                     localpart
+                                                     "@"
+                                                     (component-name comp)))))
+              (bind-parameters update-stmt "invited" chat-id)
+              (sqlite:step-statement update-stmt))
+            (unless noretry
+              (format *debug-io* "~&requesting chat metadata for ~A from ~A~%" localpart jid)
+              (whatscl::get-group-metadata conn (whatsxmpp-localpart-to-wa-jid localpart)
+                                           (lambda (conn meta)
+                                             (wa-handle-group-metadata comp conn jid localpart meta)))))))))
+
+
+
+(defun add-wa-chat (comp conn jid ct-jid)
+  "Adds the JID CT-JID to the list of the user's groupchats, if it is a groupchat."
+  (let ((uid (get-user-id jid))
+        (wx-localpart (wa-jid-to-whatsxmpp-localpart ct-jid)))
+    (unless (uiop:string-prefix-p "g" wx-localpart)
+      (return-from add-wa-chat))
+    (assert uid () "No user ID for ~A!" jid)
+    (unless (get-user-chat-id uid wx-localpart)
+      (insert-user-chat uid wx-localpart))
+    (handle-wa-chat-invitation comp conn jid uid wx-localpart)))
+
+(defun wa-handle-chats (comp conn jid chats)
   (with-wa-handler-context (comp conn jid)
-    (format *debug-io* "~&message ack: ~A is ~A (from ~A, to ~A)~%" id ack from to)
+    (format *debug-io* "~&got ~A chats for ~A~%" (length chats) jid)
+    (loop
+      for chat in chats
+      do (add-wa-chat comp conn jid (whatscl::chat-jid chat)))))
+
+(defun wa-handle-message-ack (comp conn jid &key id ack from to participant &allow-other-keys)
+  (with-wa-handler-context (comp conn jid)
+    (format *debug-io* "~&message ack: ~A is ~A (from ~A, to ~A, participant ~A)~%" id ack from to participant)
     (when (equal (whatscl::jid-to-string from) (whatscl::wac-jid conn))
       ;; (someone else acked this message)
-      (let ((xmpp-id (lookup-wa-msgid (get-user-id jid) id)))
+      (let* ((uid (get-user-id jid))
+             (xmpp-id (lookup-wa-msgid uid id)))
         (if xmpp-id
             (let ((marker-name
                     (cond
                       ((eql ack :received) "received")
                       ((eql ack :read) "displayed")
                       ((eql ack :played) "displayed")
-                      (t (return-from wa-handle-message-ack))))
-                  (from-jid (concatenate 'string
-                                         (wa-jid-to-whatsxmpp-localpart to)
-                                         "@"
-                                         (component-name comp))))
-              (with-message (comp jid
-                             :from from-jid)
-                (cxml:with-element marker-name
-                  (cxml:attribute "xmlns" +chat-markers-ns+)
-                  (cxml:attribute "id" xmpp-id))))
+                      (t (return-from wa-handle-message-ack)))))
+              (if participant
+                  (let* ((participant-localpart (wa-jid-to-whatsxmpp-localpart participant))
+                         (group-localpart (wa-jid-to-whatsxmpp-localpart to))
+                         (chat-id (get-user-chat-id uid group-localpart)))
+                    (if chat-id
+                        (let ((from-resource (or (get-participant-resource chat-id participant-localpart)
+                                                 participant-localpart))
+                              (recipients (get-user-chat-joined uid group-localpart)))
+                          (loop
+                            for recip in recipients
+                            do (with-message (comp recip
+                                                   :from (concatenate 'string
+                                                                      group-localpart
+                                                                      "@"
+                                                                      (component-name comp)
+                                                                      "/"
+                                                                      from-resource)
+                                                   :type "groupchat")
+                                 (cxml:with-element marker-name
+                                   (cxml:attribute "xmlns" +chat-markers-ns+)
+                                   (cxml:attribute "id" xmpp-id)))))
+                        (warn "Ack for message ID ~A: couldn't find chat id?" id)))
+                  (let ((from-jid (concatenate 'string
+                                               (wa-jid-to-whatsxmpp-localpart to)
+                                               "@"
+                                               (component-name comp))))
+                    (with-message (comp jid
+                                        :from from-jid)
+                      (cxml:with-element marker-name
+                        (cxml:attribute "xmlns" +chat-markers-ns+)
+                        (cxml:attribute "id" xmpp-id))))))
             (warn "Got ack for unknown message id ~A" id))))))
 
-(defun wa-handle-message-send-result (comp conn jid &key orig-from orig-to orig-id result)
+(defun wa-handle-message-send-result (comp conn jid &key orig-from orig-to orig-id orig-body result muc-resource)
   (with-wa-handler-context (comp conn jid)
     (format *debug-io* "~&message send result for ~A from ~A: ~A~%" orig-id orig-from result)
     (handler-case
@@ -1236,10 +1423,20 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
             (error "No status response provided by WhatsApp"))
           (unless (eql status 200)
             (error "Message sending failed with code ~A" status))
-          (with-message (comp orig-from :from orig-to)
-            (cxml:with-element "received"
-              (cxml:attribute "xmlns" +delivery-receipts-ns+)
-              (cxml:attribute "id" orig-id))))
+          (if muc-resource
+              ;; Do a MUC echo
+              (let* ((new-from (concatenate 'string orig-to "/" muc-resource))
+                     (group-localpart (nth-value 1 (parse-jid orig-to)))
+                     (recipients (get-user-chat-joined (get-user-id jid) group-localpart)))
+                (loop
+                  for recip in recipients
+                  do (with-message (comp recip :from new-from :id orig-id :type "groupchat")
+                       (cxml:with-element "body"
+                         (cxml:text orig-body)))))
+              (with-message (comp orig-from :from orig-to)
+                (cxml:with-element "received"
+                  (cxml:attribute "xmlns" +delivery-receipts-ns+)
+                  (cxml:attribute "id" orig-id)))))
       (error (e)
         (send-stanza-error comp
                            :id orig-id :to orig-from :from orig-to
@@ -1247,7 +1444,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                            :e (make-condition 'stanza-error
                                               :defined-condition "recipient-unavailable"
                                               :type "modify"
-                                              :text (write-to-string e)))))))
+                                              :text (format nil "~A" e)))))))
 
 (defun wa-handle-avatar-result (comp conn jid for-localpart result)
   (with-wa-handler-context (comp conn jid)
@@ -1299,6 +1496,39 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
           (sqlite:step-statement update-stmt)
           (handle-wa-contact-presence comp conn jid localpart :noretry t))))))
 
+(defun wa-handle-group-metadata (comp conn jid localpart data)
+  (with-wa-handler-context (comp conn jid)
+    (let* ((uid (get-user-id jid))
+           (cid (get-user-chat-id uid localpart)))
+      (format *debug-io* "~&got group metadata for ~A from ~A~%" localpart jid)
+      (when cid
+        (with-prepared-statements
+            ((update-subject-stmt "UPDATE user_chats SET subject = ? WHERE id = ?")
+             (delete-members-stmt "DELETE FROM user_chat_members WHERE chat_id = ?")
+             (insert-member-stmt "INSERT INTO user_chat_members (chat_id, wa_jid, resource, affiliation) VALUES (?, ?, ?, ?)"))
+          (with-transaction
+            (bind-parameters update-subject-stmt (1 (whatscl::aval :subject data)) cid)
+            (sqlite:step-statement update-subject-stmt)
+            (sqlite:step-statement delete-members-stmt)
+            (loop
+              for part in (whatscl::aval :participants data)
+              do (let ((localpart (wa-jid-to-whatsxmpp-localpart
+                                   (whatscl::parse-jid
+                                    (whatscl::aval :id part)))))
+                   (bind-parameters insert-member-stmt
+                                    cid localpart ; chat_id, wa_jid
+                                    (3 ; resource
+                                     (or
+                                      (get-contact-name uid localpart)
+                                      (substitute #\+ #\u localpart)))
+                                    (4 ; affiliation
+                                     (if (whatscl::cassoc :is-admin part)
+                                         "admin"
+                                         "member"))))
+                   (sqlite:step-statement insert-member-stmt)
+                   (sqlite:reset-statement insert-member-stmt)))
+          (handle-wa-chat-invitation comp conn jid uid localpart :noretry t))))))
+
 (defun bind-wa-handlers (comp conn jid)
   (on :ws-open conn (lambda () (wa-handle-ws-open comp conn jid)))
   (on :ws-close conn (lambda (&rest args)
@@ -1310,6 +1540,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
   (on :qrcode conn (lambda (text) (wa-handle-ws-qrcode comp conn jid text)))
   (on :message conn (lambda (msg dt) (wa-handle-message comp conn jid msg dt)))
   (on :contacts conn (lambda (contacts) (wa-handle-contacts comp conn jid contacts)))
+  (on :chats conn (lambda (chats) (wa-handle-chats comp conn jid chats)))
   (on :contact conn (lambda (contact) (wa-handle-contact comp conn jid contact)))
   (on :message-ack conn (lambda (&key id ack from to &allow-other-keys)
                           (wa-handle-message-ack comp conn jid
@@ -1449,29 +1680,148 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                   (cxml:with-element "BINVAL"
                     (cxml:text ,(qbase64:encode-bytes avatar-data)))))))))))
 
-(defun whatsxmpp-presence-handler (comp &key from to type &allow-other-keys)
-  "Handles a presence broadcast."
-  (unless (or (not type) (eql (length type) 0))
-    (return-from whatsxmpp-presence-handler))
+(defun handle-muc-join (comp jid muc-localpart muc-chatid roomnick)
+  "Handles JID joining MUC-LOCALPART."
+  (format *debug-io* "~&~A joining MUC ~A with roomnick ~A~%" jid muc-localpart roomnick)
+  (let ((muc-jid (concatenate 'string muc-localpart "@" (component-name comp))))
+    (with-prepared-statements
+        ((get-subject-stmt "SELECT subject FROM user_chats WHERE id = ?")
+         (get-resource-stmt "SELECT user_resource FROM user_chats WHERE id = ?")
+         (update-resource-stmt "UPDATE user_chats SET user_resource = ? WHERE id = ?")
+         (get-members-stmt "SELECT id, wa_jid, resource, affiliation FROM user_chat_members WHERE chat_id = ?")
+         (update-member-resource-stmt "UPDATE user_chat_members SET resource = ? WHERE id = ?")
+         (insert-joined-stmt "INSERT INTO user_chat_joined (chat_id, jid) VALUES (?, ?) ON CONFLICT DO NOTHING"))
+      (labels
+          ((send-presence (from-resource from-jid affiliation role &rest stati)
+             (with-presence (comp jid :from (concatenate 'string muc-jid "/" from-resource))
+               (cxml:with-element "x"
+                 (cxml:attribute "xmlns" +muc-user-ns+)
+                 (cxml:with-element "item"
+                   (cxml:attribute "jid" from-jid)
+                   (cxml:attribute "affiliation" affiliation)
+                   (cxml:attribute "role" role))
+                 (loop
+                   for status in stati
+                   do (cxml:with-element "status"
+                        (cxml:attribute "code" status)))))))
+        ;; step 0: if there's already a roomnick set, we gotta use that one to avoid confusion
+        ;; (this restriction will be relaxed in later versions)
+        (bind-parameters get-resource-stmt muc-chatid)
+        (assert (sqlite:step-statement get-resource-stmt))
+        (let* ((old-roomnick (first (column-values get-resource-stmt)))
+               (new-roomnick roomnick)
+               (roomnick (if (and old-roomnick (> (length old-roomnick) 0))
+                             old-roomnick new-roomnick)))
+          ;; step 1: send in-room presence from other occupants
+          (bind-parameters get-members-stmt muc-chatid)
+          (loop
+            while (sqlite:step-statement get-members-stmt)
+            do (with-bound-columns (memid mem-localpart resource affiliation) get-members-stmt
+                 (let ((resource-to-use (if (equal resource roomnick)
+                                            (concatenate 'string resource " [WA]")
+                                            resource)))
+                   (unless (equal resource-to-use resource)
+                     ;; prevent conflicts with the user's chosen roomnick
+                     (bind-parameters update-member-resource-stmt resource-to-use memid)
+                     (sqlite:step-statement update-member-resource-stmt)
+                     (sqlite:reset-statement update-member-resource-stmt))
+                   (send-presence resource-to-use
+                                  (concatenate 'string
+                                               mem-localpart
+                                               "@"
+                                               (component-name comp))
+                                  affiliation
+                                  (if (equal affiliation "member") "participant" "moderator")))))
+          ;; step 2: send self-presence
+          (if (equal old-roomnick new-roomnick)
+              (send-presence roomnick jid "member" "participant" "100" "110")
+              ;; 210 means "we forced what your nick was for you"
+              (send-presence roomnick jid "member" "participant" "100" "110" "210"))
+          ;; step 3: send subject
+          (bind-parameters get-subject-stmt muc-chatid)
+          (assert (sqlite:step-statement get-subject-stmt))
+          (with-bound-columns (subject) get-subject-stmt
+            (with-message (comp jid
+                                :from muc-jid
+                                :type "groupchat")
+              (cxml:with-element "subject"
+                (cxml:text subject))))
+          ;; step 4: update resource & joined information if required
+          (bind-parameters update-resource-stmt roomnick muc-chatid)
+          (sqlite:step-statement update-resource-stmt)
+          (bind-parameters insert-joined-stmt muc-chatid jid)
+          (sqlite:step-statement insert-joined-stmt))))))
+
+(defun whatsxmpp-presence-unavailable-handler (comp &key from to &allow-other-keys)
+  "Handles a presence unavailable broadcast."
   (with-component-data-lock (comp)
     (multiple-value-bind (to-hostname to-localpart)
         (parse-jid to)
       (declare (ignore to-hostname))
-      (format *debug-io* "~&presence to: ~A from: ~A~%" to from)
-      (when (equal to-localpart "admin")
-        (let* ((stripped (strip-resource from))
-               (conn (gethash stripped (component-whatsapps comp)))
-               (uid (get-user-id stripped)))
-          (unless uid
-            (return-from whatsxmpp-presence-handler))
-          (multiple-value-bind (admin-status admin-show)
-              (get-admin-status comp stripped)
-            (format *debug-io* "~&sending presences of everyone to ~A~%" from)
-            (admin-presence comp from admin-status admin-show)
-            (when conn
-              (loop
-                for localpart in (get-contact-localparts uid)
-                do (handle-wa-contact-presence comp conn stripped localpart)))))))))
+      (let* ((stripped (strip-resource from))
+             (uid (get-user-id stripped))
+             (chat-id (get-user-chat-id uid to-localpart)))
+        (when (and uid (uiop:string-prefix-p "g" to-localpart))
+          (format *debug-io* "~&~A muc-presence-unavailable: ~A~%" from to)
+          (when chat-id
+            (with-prepared-statements
+                ((remove-joined-stmt "DELETE FROM user_chat_joined WHERE chat_id = ? AND jid = ?"))
+              (bind-parameters remove-joined-stmt chat-id from)
+              (sqlite:step-statement remove-joined-stmt))))))))
+
+(defun whatsxmpp-presence-handler (comp &key from to type id stanza &allow-other-keys)
+  "Handles a presence broadcast."
+  (unless (or (not type) (eql (length type) 0))
+    (return-from whatsxmpp-presence-handler))
+  (with-component-data-lock (comp)
+    (multiple-value-bind (to-hostname to-localpart to-resource)
+        (parse-jid to)
+      (declare (ignore to-hostname))
+      ;; (format *debug-io* "~&presence to: ~A from: ~A~%" to from)
+      (let* ((stripped (strip-resource from))
+             (conn (gethash stripped (component-whatsapps comp)))
+             (uid (get-user-id stripped))
+             (x-element (get-node-with-xmlns (dom:child-nodes stanza) +muc-ns+)))
+        (cond
+          (x-element
+           (handler-case
+               (progn
+                 (format *debug-io* "~&~A muc-presence: ~A~%" from to)
+                 (unless uid
+                   (error 'stanza-error
+                          :defined-condition "registration-required"
+                          :text "You must register to join MUCs via this bridge."
+                          :type "auth"))
+                 (let ((chat-id (get-user-chat-id uid to-localpart)))
+                   (unless chat-id
+                     (error 'stanza-error
+                            :defined-condition "item-not-found"
+                            :text "Couldn't find a WhatsApp chat with that JID."
+                            :type "modify"))
+                   (unless to-resource
+                     (error 'stanza-error
+                            :defined-condition "jid-malformed"
+                            :text "Please specify a room nickname."
+                            :type "modify"))
+                   (handle-muc-join comp from to-localpart chat-id to-resource)))
+             (stanza-error (e)
+               (send-stanza-error comp
+                                  :stanza-type "presence"
+                                  :id id :to from :from to
+                                  :e e))))
+          ((equal to-localpart "admin")
+           (progn
+             (unless uid
+               (return-from whatsxmpp-presence-handler))
+             (multiple-value-bind (admin-status admin-show)
+                 (get-admin-status comp stripped)
+               (format *debug-io* "~&sending presences of everyone to ~A~%" from)
+               (admin-presence comp from admin-status admin-show)
+               (when conn
+                 (loop
+                   for localpart in (get-contact-localparts uid)
+                   do (handle-wa-contact-presence comp conn stripped localpart))))))
+          (t nil))))))
 
 (defun whatsxmpp-presence-probe-handler (comp &key from to id &allow-other-keys)
   "Handles presence probe requests."
@@ -1555,7 +1905,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
 (defun whatsxmpp-message-handler (comp &key from to body id &allow-other-keys)
   "Handles a message sent to the whatsxmpp bridge."
   (with-component-data-lock (comp)
-    (multiple-value-bind (to-hostname to-localpart)
+    (multiple-value-bind (to-hostname to-localpart to-resource)
         (parse-jid to)
       (declare (ignore to-hostname))
       (format *debug-io* "~&message from: ~A~%" from)
@@ -1582,17 +1932,25 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                                          :defined-condition "item-not-found"
                                          :text "That user's JID isn't in a recognizable format."
                                          :type "modify")))
-            ((not conn)
+            ((or (not conn) (not (whatscl::wac-jid conn)))
              (send-error (make-condition 'stanza-error
                                          :defined-condition "recipient-unavailable"
                                          :text "You're currently not connected to WhatsApp."
                                          :type "wait")))
+            ((and to-resource (uiop:string-prefix-p "g" to-localpart))
+             (send-error (make-condition 'stanza-error
+                                         :defined-condition "feature-not-implemented"
+                                         :text "MUC PMs are (deliberately) not implemented. Message the user directly instead."
+                                         :type "cancel")))
             (t
-             (let* ((callback (lambda (conn result)
+             (let* ((user-resource (get-user-chat-resource uid to-localpart))
+                    (callback (lambda (conn result)
                                 (wa-handle-message-send-result comp conn stripped
                                                                :orig-from from
                                                                :orig-to to
                                                                :orig-id id
+                                                               :orig-body body
+                                                               :muc-resource user-resource
                                                                :result result)))
                     (msgid (whatscl::send-simple-text-message conn wa-jid body callback)))
                (insert-user-message uid id msgid)))))))))
@@ -1630,6 +1988,8 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                                       (apply #'whatsxmpp-presence-subscribe-handler ret args)))
         (on :presence-probe ret (lambda (&rest args)
                                   (apply #'whatsxmpp-presence-probe-handler ret args)))
+        (on :presence-unavailable ret (lambda (&rest args)
+                                  (apply #'whatsxmpp-presence-unavailable-handler ret args)))
         (on :presence ret (lambda (&rest args)
                             (apply #'whatsxmpp-presence-handler ret args)))
         (register-whatsxmpp-handlers ret)

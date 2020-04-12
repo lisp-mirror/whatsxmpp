@@ -37,3 +37,26 @@ CREATE TABLE avatar_data (
        sha1 VARCHAR NOT NULL,
        image BLOB NOT NULL
 );
+
+CREATE TABLE user_chats (
+       id INTEGER PRIMARY KEY,
+       user_id INT NOT NULL REFERENCES users,
+       wa_jid VARCHAR NOT NULL,
+       user_resource VARCHAR,
+       invitation_state VARCHAR NOT NULL DEFAULT 'none',
+       subject VARCHAR
+);
+
+CREATE TABLE user_chat_members (
+       id INTEGER PRIMARY KEY,
+       chat_id INT NOT NULL REFERENCES user_chats,
+       wa_jid VARCHAR NOT NULL,
+       resource VARCHAR NOT NULL,
+       affiliation VARCHAR NOT NULL DEFAULT 'member'
+);
+
+CREATE TABLE user_chat_joined (
+       id INTEGER PRIMARY KEY,
+       chat_id INT NOT NULL REFERENCES user_chats,
+       jid VARCHAR NOT NULL
+);
