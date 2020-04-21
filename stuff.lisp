@@ -1594,10 +1594,10 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                       :type "subscribe"
                       :from (admin-jid comp))
         (cxml:with-element "status"
-          (cxml:text "Please add the whatsxmpp admin user to your roster; if you don't, things will probably break in various fun ways.")
-          (cxml:with-element "nick"
-            (cxml:attribute "xmlns" +nick-ns+)
-            (cxml:text "whatsxmpp admin"))))
+          (cxml:text "Please add the whatsxmpp admin user to your roster; if you don't, things will probably break in various fun ways."))
+        (cxml:with-element "nick"
+          (cxml:attribute "xmlns" +nick-ns+)
+          (cxml:text "whatsxmpp admin")))
       (admin-msg comp jid "WhatsApp connection should begin shortly...")
       (handle-setup-user comp stripped))))
 
