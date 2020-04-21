@@ -18,6 +18,7 @@
 (defparameter +muc-invite-ns+ "jabber:x:conference")
 (defparameter +muc-stable-id-ns+ "http://jabber.org/protocol/muc#stable_id")
 (defparameter +muc-user-ns+ "http://jabber.org/protocol/muc#user")
+(defparameter +unique-stanzas-ns+ "urn:xmpp:sid:0")
 
 (defvar *xmpp-debug-io* (make-broadcast-stream))
 (defvar *xmpp-debug-out* (make-synonym-stream '*xmpp-debug-io*))
@@ -631,6 +632,7 @@
                `((disco-identity ,chat-subject "text" "conference")
                  (disco-feature ,+muc-ns+)
                  (disco-feature ,+muc-stable-id-ns+)
+                 (disco-feature ,+unique-stanzas-ns+)
                  (disco-feature "muc_hidden")
                  (disco-feature "muc_persistent")
                  (disco-feature "muc_membersonly")
@@ -931,9 +933,10 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
     (remhash jid (component-whatsapps comp))))
 
 (defun wa-message-key-to-stanza-headers (comp conn jid msg-id msg-ts key)
-  "Takes KEY, a WHATSCL::MESSAGE-KEY, and returns (VALUES FROM TOS ID TYPE) [i.e. the values of the 'from', 'to', 'id' and 'type' stanza headers, where TOS is a list of recipients], or NIL if no action should be taken to deliver the message."
+  "Takes KEY, a WHATSCL::MESSAGE-KEY, and returns (VALUES FROM TOS ID TYPE GROUP-LOCALPART) [i.e. the values of the 'from', 'to', 'id' and 'type' stanza headers, where TOS is a list of recipients], or NIL if no action should be taken to deliver the message."
   (let* ((xmpp-id (concatenate 'string
                                "wa-" msg-id "-" (write-to-string msg-ts)))
+         (group-localpart (wa-jid-to-whatsxmpp-localpart (whatscl::key-jid key)))
          (uid (get-user-id jid))
          (previous-xmpp-id (lookup-wa-msgid uid msg-id)))
     (unless previous-xmpp-id
@@ -942,14 +945,13 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
          (progn
            (format *debug-io* "~&direct message ~A for ~A~%" msg-id jid)
            (values (concatenate 'string
-                                (wa-jid-to-whatsxmpp-localpart (whatscl::key-jid key))
+                                group-localpart
                                 "@"
                                 (component-name comp)
                                 "/whatsapp")
-                   (list jid) xmpp-id "chat")))
+                   (list jid) xmpp-id "chat" group-localpart)))
         (whatscl::message-key-group-receiving
-         (let* ((group-localpart (wa-jid-to-whatsxmpp-localpart (whatscl::key-jid key)))
-                (chat-id (get-user-chat-id uid group-localpart))
+         (let* ((chat-id (get-user-chat-id uid group-localpart))
                 (participant-localpart (wa-jid-to-whatsxmpp-localpart (whatscl::key-participant key))))
            (format *debug-io* "~&group message ~A in ~A for ~A~%" msg-id group-localpart jid)
            (if chat-id
@@ -960,7 +962,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                      (values (concatenate 'string
                                           group-localpart "@" (component-name comp)
                                           "/" from-resource)
-                             recipients xmpp-id "groupchat")
+                             recipients xmpp-id "groupchat" group-localpart)
                      (warn "None of ~A's resources were joined to group ~A to receive message ~A!" jid group-localpart msg-id)))
                (progn
                  (warn "No chat in database for group ~A for ~A -- creating" group-localpart jid)
@@ -978,7 +980,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
            (local-time:*default-timezone* local-time:+utc-zone+)
            (ts (local-time:unix-to-timestamp wa-ts)))
       (multiple-value-bind
-            (from recipients xmpp-id xmpp-type)
+            (from recipients xmpp-id xmpp-type group-localpart)
           (wa-message-key-to-stanza-headers comp conn jid wa-id wa-ts key)
         (when from
           (macrolet
@@ -998,6 +1000,13 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                              (cxml:with-element "delay"
                                (cxml:attribute "xmlns" +delivery-delay-ns+)
                                (cxml:attribute "stamp" (local-time:format-timestring nil ts)))
+                             (cxml:with-element "stanza-id"
+                               (cxml:attribute "xmlns" +unique-stanzas-ns+)
+                               (cxml:attribute "id" xmpp-id)
+                               (cxml:attribute "by" group-localpart))
+                             (cxml:with-element "origin-id"
+                               (cxml:attribute "xmlns" +unique-stanzas-ns+)
+                               (cxml:attribute "id" wa-id))
                              (cxml:with-element "markable"
                                (cxml:attribute "xmlns" +chat-markers-ns+))))))))
             (let* ((qc (whatscl::message-quoted-contents-summary msg)))
@@ -1432,7 +1441,16 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                   for recip in recipients
                   do (with-message (comp recip :from new-from :id orig-id :type "groupchat")
                        (cxml:with-element "body"
-                         (cxml:text orig-body)))))
+                         (cxml:text orig-body))
+                       (cxml:with-element "stanza-id"
+                         (cxml:attribute "xmlns" +unique-stanzas-ns+)
+                         ;; XXX: This isn't actually compliant; we're supposed to generate
+                         ;; our own IDs here. However, the worst you can do is confuse
+                         ;; your own clients...
+                         (cxml:attribute "id" orig-id)
+                         (cxml:attribute "by" orig-to))
+                       (cxml:with-element "markable"
+                         (cxml:attribute "xmlns" +chat-markers-ns+)))))
               (with-message (comp orig-from :from orig-to)
                 (cxml:with-element "received"
                   (cxml:attribute "xmlns" +delivery-receipts-ns+)
@@ -1542,9 +1560,10 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
   (on :contacts conn (lambda (contacts) (wa-handle-contacts comp conn jid contacts)))
   (on :chats conn (lambda (chats) (wa-handle-chats comp conn jid chats)))
   (on :contact conn (lambda (contact) (wa-handle-contact comp conn jid contact)))
-  (on :message-ack conn (lambda (&key id ack from to &allow-other-keys)
+  (on :message-ack conn (lambda (&key id ack from to participant &allow-other-keys)
                           (wa-handle-message-ack comp conn jid
-                                                 :id id :ack ack :from from :to to)))
+                                                 :id id :ack ack :from from :to to
+                                                 :participant participant)))
   (on :picture-change conn (lambda (for-jid removed)
                              (wa-handle-picture-change comp conn jid for-jid removed)))
 
