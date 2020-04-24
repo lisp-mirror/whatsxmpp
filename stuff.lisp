@@ -687,6 +687,7 @@ Commands:
 - connect: manually connect to WhatsApp
 - stop: disconnect from WhatsApp, and disable automatic reconnections
 - status: get your current status
+- getroster: trigger an XEP-0144 roster item exchange (in some clients, this'll pop up a window asking to add contacts to your roster)
 - help: view this help text")
 
 (defparameter *reconnect-every-secs* 5
@@ -949,7 +950,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                                 "@"
                                 (component-name comp)
                                 "/whatsapp")
-                   (list jid) xmpp-id "chat" group-localpart)))
+                   (list jid) xmpp-id "chat" nil)))
         (whatscl::message-key-group-receiving
          (let* ((chat-id (get-user-chat-id uid group-localpart))
                 (participant-localpart (wa-jid-to-whatsxmpp-localpart (whatscl::key-participant key))))
@@ -1000,13 +1001,14 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                              (cxml:with-element "delay"
                                (cxml:attribute "xmlns" +delivery-delay-ns+)
                                (cxml:attribute "stamp" (local-time:format-timestring nil ts)))
-                             (cxml:with-element "stanza-id"
-                               (cxml:attribute "xmlns" +unique-stanzas-ns+)
-                               (cxml:attribute "id" xmpp-id)
-                               (cxml:attribute "by" group-localpart))
-                             (cxml:with-element "origin-id"
-                               (cxml:attribute "xmlns" +unique-stanzas-ns+)
-                               (cxml:attribute "id" wa-id))
+                             (when (and group-localpart (not ,suppress-insert))
+                               (cxml:with-element "stanza-id"
+                                 (cxml:attribute "xmlns" +unique-stanzas-ns+)
+                                 (cxml:attribute "id" xmpp-id)
+                                 (cxml:attribute "by" group-localpart))
+                               (cxml:with-element "origin-id"
+                                 (cxml:attribute "xmlns" +unique-stanzas-ns+)
+                                 (cxml:attribute "id" wa-id)))
                              (cxml:with-element "markable"
                                (cxml:attribute "xmlns" +chat-markers-ns+))))))))
             (let* ((qc (whatscl::message-quoted-contents-summary msg)))
@@ -1042,6 +1044,9 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                                      (cxml:text get-url)))))))
                     (error (e)
                            (with-component-data-lock (comp)
+                             ;; Insert the thing into the database, so this message
+                             ;; doesn't repeat.
+                             (insert-user-message uid xmpp-id wa-id)
                              (format *debug-io* "~&whatsapp media message ~A from ~A failed! error: ~A~%"
                                      wa-id from e)
                              (admin-msg comp jid
@@ -1056,6 +1061,15 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
       (bind-parameters get-user stripped)
       (when (sqlite:step-statement get-user)
         (first (column-values get-user))))))
+
+(defun get-user-contact-localparts (uid)
+  "Returns a list of all contact localparts for UID."
+  (with-prepared-statements
+      ((get-stmt "SELECT wa_jid FROM user_contacts WHERE user_id = ?"))
+    (bind-parameters get-stmt uid)
+    (loop
+      while (sqlite:step-statement get-stmt)
+      collect (sqlite:statement-column-value get-stmt 0))))
 
 (defun get-user-chat-id (uid localpart)
   "Get the user chat ID of LOCALPART for UID, or NIL if none exists."
@@ -1297,27 +1311,9 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
 (defun wa-handle-contacts (comp conn jid contacts)
   (with-wa-handler-context (comp conn jid)
     (format *debug-io* "~&got ~A contacts for ~A~%" (length contacts) jid)
-    (let ((uid (get-user-id jid))
-          (localparts (loop
-                        for contact in contacts
-                        collect (add-wa-contact comp conn jid contact))))
-      (with-message (comp jid)
-        (cxml:with-element "x"
-          (cxml:attribute "xmlns" +roster-exchange-ns+)
-          (loop
-            for ct-localpart in localparts
-            do (when ct-localpart
-                 (let* ((ct-jid (concatenate 'string
-                                             ct-localpart
-                                             "@"
-                                             (component-name comp)))
-                        (ct-name (get-contact-name uid ct-localpart)))
-                   (cxml:with-element "item"
-                     (cxml:attribute "action" "add")
-                     (cxml:attribute "jid" ct-jid)
-                     (cxml:attribute "name" ct-name)
-                     (cxml:with-element "group"
-                       (cxml:text "WhatsApp")))))))))))
+    (loop
+      for contact in contacts
+      do (add-wa-contact comp conn jid contact))))
 
 (defun wa-handle-contact (comp conn jid contact)
   (with-wa-handler-context (comp conn jid)
@@ -1632,6 +1628,27 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
       (exists-p (values "Temporarily disconnected." "away"))
       (t (values "Disconnected (automatic reconnections disabled)." "xa")))))
 
+(defun do-roster-exchange (comp jid uid)
+  "Initiate an XEP-0144 Roster Item Exchange for JID (with user ID UID)."
+  (let ((localparts (get-user-contact-localparts uid)))
+    (with-message (comp jid)
+      (cxml:with-element "x"
+        (cxml:attribute "xmlns" +roster-exchange-ns+)
+        (loop
+          for ct-localpart in localparts
+          do (when ct-localpart
+               (let* ((ct-jid (concatenate 'string
+                                           ct-localpart
+                                           "@"
+                                           (component-name comp)))
+                      (ct-name (get-contact-name uid ct-localpart)))
+                 (cxml:with-element "item"
+                   (cxml:attribute "action" "add")
+                   (cxml:attribute "jid" ct-jid)
+                   (cxml:attribute "name" ct-name)
+                   (cxml:with-element "group"
+                     (cxml:text "WhatsApp"))))))))))
+
 (defun handle-admin-command (comp from body uid)
   "Handles an admin command sent to COMP."
   (labels ((reply (text)
@@ -1649,6 +1666,10 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
          (reply *admin-help-text*))
         ((not uid)
          (reply "You're not registered with this bridge. Try `register` or `help`."))
+        ((equal body "getroster")
+         (progn
+           (do-roster-exchange comp stripped uid)
+           (reply "Roster exchange request sent.")))
         ((equal body "status")
          (reply (get-admin-status comp stripped)))
         ((equal body "connect")
