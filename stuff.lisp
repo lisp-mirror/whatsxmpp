@@ -968,7 +968,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                (progn
                  (warn "No chat in database for group ~A for ~A -- creating" group-localpart jid)
                  (add-wa-chat comp conn jid (whatscl::key-jid key))
-                 (return)))))
+                 (return-from wa-message-key-to-stanza-headers)))))
         (t nil)))))
 
 (defun wa-handle-message (comp conn jid msg delivery-type)
