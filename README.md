@@ -107,12 +107,11 @@ you might run the bridge like so:
 
 ```
 docker run \
-	--name whatsxmpp \
+    --name whatsxmpp \
     --restart always \
-	-v /wx:/data \
-    eu.gcr.io/etainfra/whatsxmpp
+    -v /wx:/data \
+    eu.gcr.io/etainfra/whatsxmpp \
     /data/data.sqlite3
-
 ```
 
 Consult the [Docker reference](https://docs.docker.com/engine/reference/run/) for more details
