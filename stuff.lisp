@@ -19,6 +19,8 @@
 (defparameter +muc-stable-id-ns+ "http://jabber.org/protocol/muc#stable_id")
 (defparameter +muc-user-ns+ "http://jabber.org/protocol/muc#user")
 (defparameter +unique-stanzas-ns+ "urn:xmpp:sid:0")
+(defparameter +chat-states-ns+ "http://jabber.org/protocol/chatstates")
+(defparameter +hints-ns+ "urn:xmpp:hints")
 
 (defvar *xmpp-debug-io* (make-broadcast-stream))
 (defvar *xmpp-debug-out* (make-synonym-stream '*xmpp-debug-io*))
@@ -559,7 +561,8 @@
          (id (dom:get-attribute stanza "id"))
          (children (dom:child-nodes stanza))
          (body (get-node-named children "body"))
-         (marker (get-node-with-xmlns children +chat-markers-ns+)))
+         (marker (get-node-with-xmlns children +chat-markers-ns+))
+         (chat-state (get-node-with-xmlns children +chat-states-ns+)))
     (cond
       (body
        (let* ((child-nodes (dom:child-nodes body))
@@ -571,6 +574,9 @@
        (let ((marker-type (dom:tag-name marker))
              (msgid (dom:get-attribute marker "id")))
          (emit :message-marker comp :from from :to to :type marker-type :marker-id msgid :id id :stanza stanza)))
+      (chat-state
+       (let ((state-type (dom:tag-name chat-state)))
+         (emit :chat-state comp :from from :to to :type state-type :id id :stanza stanza)))
       (t
        (emit :message comp :from from :to to :id id :stanza stanza)))))
 
@@ -706,7 +712,6 @@ Commands:
         (cxml:text show)))
     (cxml:with-element "status"
       (cxml:text status))))
-
 
 (defun wa-resetup-users (comp)
   "Go through the list of WhatsApp users and reconnect those whose connections have dropped."
@@ -900,6 +905,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
       (update-session-data jid sessdata)
       (admin-msg comp jid status)
       (admin-presence comp jid status)
+      (whatscl::send-presence conn :available)
       (format *debug-io* "~&ws-connected: ~A (as ~A)~%" jid wa-jid))))
 
 (defun wa-handle-error-status-code (comp conn jid err)
@@ -1002,6 +1008,8 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                              (cxml:with-element "delay"
                                (cxml:attribute "xmlns" +delivery-delay-ns+)
                                (cxml:attribute "stamp" (local-time:format-timestring nil ts)))
+                             (cxml:with-element "active"
+                               (cxml:attribute "xmlns" +chat-states-ns+))
                              (when (and group-localpart (not ,suppress-insert))
                                (cxml:with-element "stanza-id"
                                  (cxml:attribute "xmlns" +unique-stanzas-ns+)
@@ -1544,6 +1552,25 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                    (sqlite:reset-statement insert-member-stmt)))
           (handle-wa-chat-invitation comp conn jid uid localpart :noretry t))))))
 
+(defun wa-handle-presence (comp conn jid &key for-jid type participant &allow-other-keys)
+  (with-wa-handler-context (comp conn jid)
+    (let* ((localpart (wa-jid-to-whatsxmpp-localpart for-jid))
+           (chat-state
+             (cond
+               ((eql type :composing) "composing")
+               ((eql type :paused) "paused")
+               ((eql type :available) "active")
+               (t (return-from wa-handle-presence)))))
+      (unless participant ; Groups hard
+        (let ((from-jid (concatenate 'string
+                                     localpart
+                                     "@"
+                                     (component-name comp))))
+          (with-message (comp jid
+                              :from from-jid)
+            (cxml:with-element chat-state
+              (cxml:attribute "xmlns" +chat-states-ns+))))))))
+
 (defun bind-wa-handlers (comp conn jid)
   (on :ws-open conn (lambda () (wa-handle-ws-open comp conn jid)))
   (on :ws-close conn (lambda (&rest args)
@@ -1566,6 +1593,10 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
 
   (on :status-change conn (lambda (for-jid status)
                              (wa-handle-status-change comp conn jid for-jid status)))
+  (on :presence conn (lambda (&key of type participant &allow-other-keys)
+                       (wa-handle-presence comp conn jid
+                                           :for-jid of :type type
+                                           :participant participant)))
   (on :connected conn (lambda (waj) (wa-handle-ws-connected comp conn jid waj))))
 
 (defun handle-setup-user (comp jid)
@@ -1861,7 +1892,8 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                (when conn
                  (loop
                    for localpart in (get-contact-localparts uid)
-                   do (handle-wa-contact-presence comp conn stripped localpart))))))
+                   do (handle-wa-contact-presence comp conn stripped localpart))
+                 (whatscl::send-presence conn :available)))))
           (t nil))))))
 
 (defun whatsxmpp-presence-probe-handler (comp &key from to id &allow-other-keys)
@@ -1907,6 +1939,34 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                                                 :defined-condition "item-not-found"
                                                 :text "That user's JID isn't in a recognizable format."
                                                 :type "modify"))))))
+
+(defun whatsxmpp-chat-state-handler (comp &key from to type &allow-other-keys)
+  "Handles a chat state sent to the whatsxmpp bridge."
+  (with-component-data-lock (comp)
+    (multiple-value-bind (to-hostname to-localpart)
+        (parse-jid to)
+      (declare (ignore to-hostname))
+      (format *debug-io* "~&chat state: ~A is ~A to ~A~%" from type to)
+      (let* ((stripped (strip-resource from))
+             (uid (get-user-id stripped))
+             (conn (gethash stripped (component-whatsapps comp)))
+             (wa-jid (whatsxmpp-localpart-to-wa-jid to-localpart))
+             (presence-type
+               (cond
+                 ((string= type "composing") :composing)
+                 ((string= type "paused") :paused)
+                 ((string= type "active") :available)
+                 (t (return-from whatsxmpp-chat-state-handler)))))
+        (unless uid
+          (warn "Got chat state for user that isn't registered")
+          (return-from whatsxmpp-chat-state-handler))
+        (unless wa-jid
+          (return-from whatsxmpp-chat-state-handler))
+        (unless conn
+          (warn "Can't send chat state, since user connection is offline"))
+        (whatscl::send-presence conn presence-type
+                                (unless (eql presence-type :active)
+                                  wa-jid))))))
 
 (defun whatsxmpp-marker-handler (comp &key from to type marker-id id &allow-other-keys)
   "Handles a message marker sent to the whatsxmpp bridge."
@@ -1994,6 +2054,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                                                                :muc-resource user-resource
                                                                :result result)))
                     (msgid (whatscl::send-simple-text-message conn wa-jid body callback)))
+               (whatscl::send-presence conn :available)
                (insert-user-message uid id msgid)))))))))
 
 (defun whatsxmpp-load-users (comp)
@@ -2033,6 +2094,8 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                                   (apply #'whatsxmpp-presence-unavailable-handler ret args)))
         (on :presence ret (lambda (&rest args)
                             (apply #'whatsxmpp-presence-handler ret args)))
+        (on :chat-state ret (lambda (&rest args)
+                            (apply #'whatsxmpp-chat-state-handler ret args)))
         (register-whatsxmpp-handlers ret)
         (whatsxmpp-load-users ret)
         (setf (component-reconnect-timer ret) (trivial-timers:make-timer
