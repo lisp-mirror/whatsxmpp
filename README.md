@@ -64,6 +64,9 @@ Component "whatsapp.capulet.lit"
         component_secret = "juliet"
 ```
 
+**WARNING**: Unless you want to run a public bridge (not recommended at this time), limit
+access to the external component to only people on your server. (On prosody, add
+`modules_disabled = { "s2s" }` to the component configuration.)
 
 ### Step 2: set up the database and storage for the bridge
 
