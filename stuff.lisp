@@ -1,5 +1,7 @@
 (in-package :whatsxmpp)
 
+(defparameter +version+ "0.0.1")
+
 (defparameter +streams-ns+ "urn:ietf:params:xml:ns:xmpp-streams")
 (defparameter +stanzas-ns+ "urn:ietf:params:xml:ns:xmpp-stanzas")
 (defparameter +component-ns+ "jabber:component:accept")
@@ -2109,21 +2111,30 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
 
 #+sbcl
 (defun report-error-and-die (err)
-  (format t "ERROR: ~A~%Backtrace: ~A~%" err
-          (trivial-backtrace:print-backtrace err))
+  (format *error-output* "[!] Fatal error, bridge aborting!~%")
+  (trivial-backtrace:print-backtrace err
+                                     :output *error-output*)
   (sb-ext:exit :code 1 :abort t))
 
 #+sbcl
 (defun main ()
   "Hacky main() function for running this in 'the real world' (outside emacs)"
+  (setf *debugger-hook* (lambda (condition hook)
+                          (declare (ignore hook))
+                          (report-error-and-die condition)))
+  (when (< (length sb-ext:*posix-argv*) 2)
+    (format *error-output* "fatal: a path to the database must be provided~%")
+    (format *error-output* "usage: ~A DATABASE_PATH~%" (elt sb-ext:*posix-argv* 0))
+    (sb-ext:exit :code 2 :abort t))
   (let ((*default-database-path* (elt sb-ext:*posix-argv* 1)))
-    (format t "Using database at ~A~%" *default-database-path*)
-    (setf swank:*configure-emacs-indentation* nil)
-    (swank:create-server :dont-close t)
-    (setf *debugger-hook* (lambda (condition hook)
-                            (declare (ignore hook))
-                            (report-error-and-die condition)))
-    (format t "*mario voice* Here we go!~%")
+    (format t "[*] whatsxmpp version ~A / an eta project <https://theta.eu.org>~%" +version+)
+    (format t "[+] Using database at ~A~%" *default-database-path*)
+    #+use-swank
+    (block nil
+      (format t "[+] Starting SWANK server~%")
+      (setf swank:*configure-emacs-indentation* nil)
+      (swank:create-server :dont-close t))
+    (format t "[+] Initializing bridge~%")
     (setf *comp* (whatsxmpp-init))
     (on :error *comp* (lambda (e)
                         (report-error-and-die e)))
@@ -2137,7 +2148,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
         (bt:with-lock-held (lock)
           (bt:condition-wait condvar lock))))))
 
-#+sbcl
+#+use-swank
 (uiop:register-image-dump-hook
  (lambda ()
    (swank-loader:init
