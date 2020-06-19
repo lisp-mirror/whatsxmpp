@@ -774,7 +774,7 @@ MEDIA-TYPE is one of (:image :video :audio :document)."
                             (multiple-value-bind (body status-code)
                                 (drakma:http-request put-url
                                                      :additional-headers headers
-                                                     :content-length (file-length file-data)
+                                                     :content-length (length decrypted-file)
                                                      :content-type mime-type
                                                      :method :put
                                                      :content decrypted-file)
@@ -794,35 +794,36 @@ MEDIA-TYPE is one of (:image :video :audio :document)."
       (format *debug-io* "~&using path ~A~%" path)
       (cl-qrencode:encode-png-stream text stream)
       (catcher
-       (attach
-        (request-http-upload-slot comp (component-upload-component-name comp)
-                                  "qrcode.png"
-                                  (file-length stream)
-                                  "image/png")
-        (lambda (slot)
-          (destructuring-bind ((put-url . headers) get-url) slot
-            (format *debug-io* "~&got put-url: ~A~%   get-url: ~A~%" put-url get-url)
-            (multiple-value-bind (body status-code)
-                (drakma:http-request put-url
-                                     :additional-headers headers
-                                     :content-type "image/png"
-                                     :content-length (file-length stream)
-                                     :method :put
-                                     :content path)
-              (unless (and (>= status-code 200) (< status-code 300))
-                (format *debug-io* "~&upload failed! status ~A, body ~A~%" status-code body)
-                (error "HTTP upload failed with status ~A" status-code))
-              (with-component-data-lock (comp)
-                (let ((ajid (admin-jid comp)))
-                  (admin-msg comp jid "WhatsApp Web registration: Scan the following QR code with your device! (Menu -> WhatsApp Web)")
-                  (with-message (comp jid :from ajid)
-                    (cxml:with-element "body"
-                      (cxml:text get-url))
-                    (cxml:with-element "x"
-                      (cxml:attribute "xmlns" +oob-ns+)
-                      (cxml:with-element "url"
-                        (cxml:text get-url))))
-                  (admin-msg comp jid "(Code expired? Be faster next time. Get a new one with `connect`.)")))))))
+       (let ((content-length (file-length stream)))
+         (attach
+          (request-http-upload-slot comp (component-upload-component-name comp)
+                                    "qrcode.png"
+                                    (file-length stream)
+                                    "image/png")
+          (lambda (slot)
+            (destructuring-bind ((put-url . headers) get-url) slot
+              (format *debug-io* "~&got put-url: ~A~%   get-url: ~A~%" put-url get-url)
+              (multiple-value-bind (body status-code)
+                  (drakma:http-request put-url
+                                       :additional-headers headers
+                                       :content-type "image/png"
+                                       :content-length content-length
+                                       :method :put
+                                       :content path)
+                (unless (and (>= status-code 200) (< status-code 300))
+                  (format *debug-io* "~&upload failed! status ~A, body ~A~%" status-code body)
+                  (error "HTTP upload failed with status ~A" status-code))
+                (with-component-data-lock (comp)
+                  (let ((ajid (admin-jid comp)))
+                    (admin-msg comp jid "WhatsApp Web registration: Scan the following QR code with your device! (Menu -> WhatsApp Web)")
+                    (with-message (comp jid :from ajid)
+                      (cxml:with-element "body"
+                        (cxml:text get-url))
+                      (cxml:with-element "x"
+                        (cxml:attribute "xmlns" +oob-ns+)
+                        (cxml:with-element "url"
+                          (cxml:text get-url))))
+                    (admin-msg comp jid "(Code expired? Be faster next time. Get a new one with `connect`.)"))))))))
        (t (e)
           (admin-msg comp jid (format nil "Failed to upload QR code!~%Report the following error to the bridge admin: `~A`" e)))))))
 
