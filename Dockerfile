@@ -9,8 +9,7 @@ RUN make
 
 FROM debian:stable-slim AS whatsxmpp
 WORKDIR /wx
-RUN apt-get update && apt-get install -y libz-dev libsqlite3-dev libssl-dev ca-certificates
-RUN apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y libz-dev libsqlite3-dev libssl-dev ca-certificates && apt-get clean && rm -rf /var/lib/apt/lists/*
 RUN mkdir /wx-data
 COPY --from=whatscl-compiled /src/whatsxmpp/whatsxmpp /wx/whatsxmpp
-ENTRYPOINT "/wx/whatsxmpp"
+ENTRYPOINT ["/wx/whatsxmpp"]
