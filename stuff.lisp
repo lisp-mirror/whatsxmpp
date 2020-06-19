@@ -774,6 +774,7 @@ MEDIA-TYPE is one of (:image :video :audio :document)."
                             (multiple-value-bind (body status-code)
                                 (drakma:http-request put-url
                                                      :additional-headers headers
+                                                     :content-length (file-length file-data)
                                                      :content-type mime-type
                                                      :method :put
                                                      :content decrypted-file)
@@ -805,6 +806,7 @@ MEDIA-TYPE is one of (:image :video :audio :document)."
                 (drakma:http-request put-url
                                      :additional-headers headers
                                      :content-type "image/png"
+                                     :content-length (file-length stream)
                                      :method :put
                                      :content path)
               (unless (and (>= status-code 200) (< status-code 300))
