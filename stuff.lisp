@@ -2,7 +2,6 @@
 
 (defparameter +version+ "0.0.1")
 
-
 (defclass whatsxmpp-component (xmpp-component)
   ((whatsapps
     :initform (make-hash-table :test 'equal)
@@ -14,20 +13,15 @@
     :initarg :upload-component-name
     :accessor component-upload-component-name)))
 
-
 (defun send-text-message (comp to-jid text &optional from)
   "Send a simple text message to TO-JID, containing TEXT."
   (with-message (comp to-jid :from from)
     (cxml:with-element "body"
       (cxml:text text))))
 
-
 (defun handle-connection-complete (comp)
   (format *debug-io* "Connection complete! \\o/")
   (emit :connected comp))
-
-
-
 
 (defun disco-info-handler (comp &key to from &allow-other-keys)
   "Handles XEP-0030 disco#info requests."
