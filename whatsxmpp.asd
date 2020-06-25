@@ -6,5 +6,12 @@
   :entry-point "whatsxmpp::main"
   :components
   ((:file "packages")
+   (:file "utils")
+   (:file "namespaces")
+   (:file "component")
+   (:file "xmpp")
+   (:file "xep-0030")
+   (:file "xep-0363")
    (:file "sqlite")
+   (:file "db")
    (:file "stuff")))
