@@ -2,6 +2,7 @@ FROM rigetti/lisp AS whatscl-compiled
 
 RUN apt update -y && apt install -y git
 RUN sbcl --eval '(progn (quicklisp:update-dist "quicklisp" :prompt nil) (sb-ext:exit))' 
+RUN git clone https://github.com/sharplispers/ironclad /src/ironclad
 RUN git clone https://github.com/eeeeeta/websocket-driver /src/websocket-driver
 RUN git clone https://git.theta.eu.org/whatscl.git /src/whatscl
 ADD ./ /src/whatsxmpp
