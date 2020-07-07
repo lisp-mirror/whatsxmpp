@@ -14,18 +14,18 @@
      (let ((slot-node (get-node-named results "slot")))
        (unless slot-node
          (error "Malformed XEP-0363 response: no <slot/>"))
-       (let* ((children (dom:child-nodes slot-node))
+       (let* ((children (child-elements slot-node))
               (put-node (get-node-named children "put"))
               (get-node (get-node-named children "get"))
               (headers '()))
          (unless (and put-node get-node)
            (error "Malformed XEP-0363 response: PUT or GET nodes missing"))
          (loop
-           for node across (dom:child-nodes put-node)
+           for node across (child-elements put-node)
            do (let ((name (dom:tag-name node)))
                 (when (equal name "header")
                   (setf headers (cons
                                  (cons (dom:get-attribute node "name")
-                                       (dom:node-value (elt (dom:child-nodes node) 0)))
+                                       (dom:node-value (elt (child-elements node) 0)))
                                  headers)))))
          `((,(dom:get-attribute put-node "url") . ,headers) ,(dom:get-attribute get-node "url")))))))

@@ -4,7 +4,7 @@ let
 in
 pkgs.dockerTools.buildLayeredImage {
   name = "eu.gcr.io/etainfra/whatsxmpp";
-  tag = "nix";
+  tag = "latest";
   contents = [ whatsxmpp ];
   config.Entrypoint = [ "${whatsxmpp}/bin/whatsxmpp" ];
   config.Env = [ "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" ];

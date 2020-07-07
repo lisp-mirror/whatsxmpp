@@ -12,3 +12,7 @@
 (defun sha1-hex (str)
   "Returns the SHA1 of STR, a string, in lowercase hex."
   (sha1-octets (babel:string-to-octets str)))
+
+(defun child-elements (node)
+  "Returns the child elements (excluding text nodes) of the CXML DOM node NODE."
+  (remove-if-not #'dom:element-p (dom:child-nodes node)))

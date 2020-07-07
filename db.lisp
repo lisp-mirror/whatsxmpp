@@ -124,3 +124,12 @@
     (loop
       while (sqlite:step-statement get-stmt)
       collect (with-bound-columns (localpart) get-stmt localpart))))
+
+(defun get-user-groupchats (uid)
+  "Get a list of groupchat info (cons pairs of LOCALPART . SUBJECT) for the user with ID UID."
+  (with-prepared-statements
+      ((get-stmt "SELECT wa_jid, subject FROM user_chats WHERE user_id = ?"))
+    (bind-parameters get-stmt uid)
+    (loop
+      while (sqlite:step-statement get-stmt)
+      collect (with-bound-columns (localpart subject) get-stmt (cons localpart subject)))))

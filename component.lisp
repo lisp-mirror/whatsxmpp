@@ -232,7 +232,10 @@
 
 (defun handle-iq-get (comp id from stanza)
   "Handles an IQ-get STANZA for component COMP."
-  (let* ((first-child (elt (dom:child-nodes stanza) 0))
+  (let* ((children (child-elements stanza))
+         (first-child (if (> (length children) 0)
+                          (elt children 0)
+                          (return-from handle-iq-get)))
          (tag-name (dom:tag-name first-child))
          (to (dom:get-attribute stanza "to"))
          (xmlns (dom:get-attribute first-child "xmlns"))

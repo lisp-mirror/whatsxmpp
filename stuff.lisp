@@ -40,6 +40,7 @@
             (cond
               ((equal to (component-name comp))
                `((disco-identity "whatsxmpp bridge" "xmpp" "gateway")
+                 (disco-feature ,+disco-items-ns+)
                  (disco-feature ,+muc-ns+)))
               ((and user-name (not to-resource))
                `((disco-identity ,user-name "registered" "account")))
@@ -56,12 +57,22 @@
                  (disco-feature "muc_nonanonymous")))
               (t nil))))))))
 
-(defun disco-items-handler (comp &key to &allow-other-keys)
+(defun disco-items-handler (comp &key to from &allow-other-keys)
   "Handles XEP-0030 disco#items requests."
-  (format *debug-io* "~&disco#items: ~A~%" to)
+  (format *debug-io* "~&disco#items: ~A from ~A~%" to from)
   (with-component-data-lock (comp)
     `((cxml:with-element "query"
-        (cxml:attribute "xmlns" ,+disco-info-ns+)))))
+        (cxml:attribute "xmlns" ,+disco-items-ns+)
+        ,@(when (equal to (component-name comp))
+            (let ((uid (get-user-id (strip-resource from))))
+              (format *debug-io* "~&muc list disco#items for ~A~%" (strip-resource from))
+              (loop
+                for (localpart . subject) in (get-user-groupchats uid)
+                collect `(cxml:with-element "item"
+                           (cxml:attribute "jid" ,(concatenate 'string
+                                                               localpart "@"
+                                                               (component-name comp)))
+                           (cxml:attribute "name" ,subject)))))))))
 
 (defun admin-jid (comp)
   "Get the admin JID for COMP. You need the lock to be taken out for this one."
@@ -1115,7 +1126,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
       (let* ((stripped (strip-resource from))
              (conn (gethash stripped (component-whatsapps comp)))
              (uid (get-user-id stripped))
-             (x-element (get-node-with-xmlns (dom:child-nodes stanza) +muc-ns+)))
+             (x-element (get-node-with-xmlns (child-elements stanza) +muc-ns+)))
         (cond
           (x-element
            (handler-case

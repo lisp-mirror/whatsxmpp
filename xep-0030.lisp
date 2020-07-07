@@ -13,7 +13,7 @@
        (unless query-node
          (error "Malformed disco#info response: no <query/>"))
        (loop
-         for node across (dom:child-nodes query-node)
+         for node across (child-elements query-node)
          do (let ((name (dom:tag-name node)))
               (when (equal name "feature")
                 (setf features (cons (dom:get-attribute node "var") features)))))
@@ -31,7 +31,7 @@
        (unless query-node
          (error "Malformed disco#items response: no <query/>"))
        (loop
-         for node across (dom:child-nodes query-node)
+         for node across (child-elements query-node)
          do (let ((name (dom:tag-name node)))
               (when (equal name "item")
                 (setf items (cons
