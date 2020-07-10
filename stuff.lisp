@@ -803,7 +803,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
              (delete-members-stmt "DELETE FROM user_chat_members WHERE chat_id = ?")
              (insert-member-stmt "INSERT INTO user_chat_members (chat_id, wa_jid, resource, affiliation) VALUES (?, ?, ?, ?)"))
           (with-transaction
-            (bind-parameters update-subject-stmt (1 (whatscl::aval :subject data)) cid)
+            (bind-parameters update-subject-stmt (1 (or (whatscl::cassoc :subject data) "unnamed group")) cid)
             (sqlite:step-statement update-subject-stmt)
             (sqlite:step-statement delete-members-stmt)
             (loop
