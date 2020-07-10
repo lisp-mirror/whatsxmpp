@@ -183,6 +183,7 @@ MEDIA-TYPE is one of (:image :video :audio :document)."
                                :keep t) ; Needed because async
       (format *debug-io* "~&using path ~A~%" path)
       (cl-qrencode:encode-png-stream text stream)
+      (force-output stream) ; otherwise the QR codes get chopped off?
       (catcher
        (let ((content-length (file-length stream)))
          (attach
