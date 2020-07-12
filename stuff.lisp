@@ -798,13 +798,17 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
     (let* ((uid (get-user-id jid))
            (cid (get-user-chat-id uid localpart)))
       (format *debug-io* "~&got group metadata for ~A from ~A~%" localpart jid)
+      (unless (whatscl::cassoc :subject data)
+        (warn "Received incomplete group metadata for ~A from ~A: ~A" localpart jid data)
+        (return-from wa-handle-group-metadata))
       (when cid
         (with-prepared-statements
             ((update-subject-stmt "UPDATE user_chats SET subject = ? WHERE id = ?")
              (delete-members-stmt "DELETE FROM user_chat_members WHERE chat_id = ?")
              (insert-member-stmt "INSERT INTO user_chat_members (chat_id, wa_jid, resource, affiliation) VALUES (?, ?, ?, ?)"))
           (with-transaction
-            (bind-parameters update-subject-stmt (1 (or (whatscl::cassoc :subject data) "unnamed group")) cid)
+              (let ((subject (whatscl::cassoc :subject data)))
+                (bind-parameters update-subject-stmt subject cid))
             (sqlite:step-statement update-subject-stmt)
             (sqlite:step-statement delete-members-stmt)
             (loop
