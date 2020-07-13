@@ -373,8 +373,8 @@ let
     wsd-src = depot.third_party.fetchFromGitHub {
       owner = "eeeeeta";
       repo = "websocket-driver";
-      rev = "4dbb06e984f76c33a2c4adfe413d9a982dede60d";
-      sha256 = "09d83ppswk8sh3vp3p0gj816h9n6d48ja9izzgdwpm3ci4dyfx9g";
+      rev = "03fdb0684c50fe77cf186d208c671bd9a1575985";
+      sha256 = "06plrbk7sbz456hkxsd97ib7xvjp484d18l0r11pqjd1659smjb3";
     };
     wsd-base = buildLisp.library {
       name = "websocket-driver-base";
