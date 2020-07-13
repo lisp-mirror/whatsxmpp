@@ -548,11 +548,10 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
       (unless (sqlite:step-statement get-stmt)
         (error "No contact with localpart ~A exists!" localpart))
       (with-bound-columns (subscription-state name notify ctid) get-stmt
-        (when (equal subscription-state "none")
-          (let ((name-to-use (or name
-                                 (when notify (concatenate 'string "~" notify))
-                                 (substitute #\+ #\u localpart)))
-                (from (concatenate 'string localpart "@" (component-name comp))))
+        (let ((name-to-use (or name
+                               (when notify (concatenate 'string "~" notify))))
+              (from (concatenate 'string localpart "@" (component-name comp))))
+          (when (and (equal subscription-state "none") name-to-use)
             (with-presence (comp jid
                             :type "subscribe"
                             :from from)
