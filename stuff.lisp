@@ -329,11 +329,13 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
     (admin-msg comp jid "(Disabling automatic reconnections.)")
     (remhash jid (component-whatsapps comp))))
 
-(defun wa-handle-error (comp conn jid err)
+(defun wa-handle-error (comp conn jid err bt)
   (with-wa-handler-context (comp conn jid)
     (format *debug-io* "~&whatscl error for ~A: ~A~%" jid err)
     (admin-msg comp jid
                (format nil "A programming error has been detected and your connection has been aborted unexpectedly.~%Report the following error to the bridge admin: ~A" err))
+    (admin-msg comp jid
+               (format nil "Backtrace:~%~A" bt))
     (admin-msg comp jid "(Disabling automatic reconnections.)")
     (admin-presence comp jid "Programming error" "xa")
     (remhash jid (component-whatsapps comp))))
@@ -854,7 +856,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                        (declare (ignore args))
                        (wa-handle-ws-close comp conn jid)))
   (on :ws-error conn (lambda (e) (wa-handle-ws-error comp conn jid e)))
-  (on :error conn (lambda (e) (wa-handle-error comp conn jid e)))
+  (on :error conn (lambda (e backtrace) (wa-handle-error comp conn jid e backtrace)))
   (on :error-status-code conn (lambda (e) (wa-handle-error-status-code comp conn jid e)))
   (on :qrcode conn (lambda (text) (wa-handle-ws-qrcode comp conn jid text)))
   (on :message conn (lambda (msg dt) (wa-handle-message comp conn jid msg dt)))
