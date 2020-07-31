@@ -55,12 +55,12 @@
 
 (defun get-node-named (nodes name)
   "Finds the node with tag name NAME in NODES, returning NIL if none was found."
-  (flet ((is-the-node (node) (equal (dom:tag-name node) name)))
+  (flet ((is-the-node (node) (and (dom:element-p node) (equal (dom:tag-name node) name))))
     (find-if #'is-the-node nodes)))
 
 (defun get-node-with-xmlns (nodes xmlns)
   "Finds the node with XML namespace XMLNS in NODES, returning NIL if none was found."
-  (flet ((is-the-node (node) (equal (dom:get-attribute node "xmlns") xmlns)))
+  (flet ((is-the-node (node) (and (dom:element-p node) (equal (dom:get-attribute node "xmlns") xmlns))))
     (find-if #'is-the-node nodes)))
 
 (defun handle-stream-error (comp stanza)
@@ -68,7 +68,7 @@
            (equal (dom:namespace-uri node) +streams-ns+))
          (is-text-node (node)
            (equal (dom:tag-name node) "text")))
-    (let* ((children (dom:child-nodes stanza))
+    (let* ((children (child-elements stanza))
            (error-node (find-if #'is-error-node children))
            (error-text-node (find-if #'is-text-node children))
            (error-name (dom:tag-name error-node))
@@ -104,8 +104,8 @@
            (equal (dom:tag-name node) "error"))
          (is-text-node (node)
            (and (equal (dom:namespace-uri node) +stanzas-ns+) (equal (dom:tag-name node) "text"))))
-    (let* ((error-node (find-if #'is-error-node (dom:child-nodes stanza)))
-           (error-children (dom:child-nodes error-node))
+    (let* ((error-node (find-if #'is-error-node (child-elements stanza)))
+           (error-children (child-elements error-node))
            (type (dom:get-attribute error-node "type"))
            (condition-node (find-if #'is-error-condition-node error-children))
            (condition-name (dom:tag-name condition-node))

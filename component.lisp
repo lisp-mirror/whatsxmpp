@@ -269,7 +269,7 @@
                 (progn
                   (format t "~&IQ ~A from ~A for ~A~%" type from id)
                   (cond
-                    ((equal type "result") (finish promise (dom:child-nodes stanza)))
+                    ((equal type "result") (finish promise (child-elements stanza)))
                     ((equal type "error") (signal-error promise (extract-stanza-error stanza)))
                     (t (warn "Invalid IQ stanza type: ~A" type)))
                   (setf promise nil))
@@ -293,7 +293,7 @@
   (let* ((from (dom:get-attribute stanza "from"))
          (to (dom:get-attribute stanza "to"))
          (id (dom:get-attribute stanza "id"))
-         (children (dom:child-nodes stanza))
+         (children (child-elements stanza))
          (body (get-node-named children "body"))
          (marker (get-node-with-xmlns children +chat-markers-ns+))
          (chat-state (get-node-with-xmlns children +chat-states-ns+)))
