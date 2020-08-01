@@ -310,24 +310,27 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
 (defun wa-handle-error-status-code (comp conn jid err)
   (with-wa-handler-context (comp conn jid)
     (format *debug-io* "~&error-status-code for ~A: ~A~%" jid err)
-    (let ((status-code (whatscl::scerror-status-code err)))
-      (cond
-        ((equal status-code 401)
-         (progn
-           (admin-msg comp jid "Error: The WhatsApp Web connection was removed from your device! You'll need to scan the QR code again.")
-           (admin-presence comp jid "Connection removed" "xa")
-           (update-session-data jid "")))
-        ((equal status-code 403)
-         (progn
-           (admin-msg comp jid "Error: WhatsApp Web denied access. You may have violated the Terms of Service.")
-           (admin-presence comp jid "Access denied" "xa")
-           (update-session-data jid "")))
-        (t
-         (progn
-           (admin-presence comp jid "Login failure" "xa")
-           (admin-msg comp jid (format nil "Login failure: ~A" err))))))
-    (admin-msg comp jid "(Disabling automatic reconnections.)")
-    (remhash jid (component-whatsapps comp))))
+    (if (typep err 'whatscl::login-error)
+        (progn
+          (let ((status-code (whatscl::scerror-status-code err)))
+            (cond
+              ((equal status-code 401)
+               (progn
+                 (admin-msg comp jid "Error: The WhatsApp Web connection was removed from your device! You'll need to scan the QR code again.")
+                 (admin-presence comp jid "Connection removed" "xa")
+                 (update-session-data jid "")))
+              ((equal status-code 403)
+               (progn
+                 (admin-msg comp jid "Error: WhatsApp Web denied access. You may have violated the Terms of Service.")
+                 (admin-presence comp jid "Access denied" "xa")
+                 (update-session-data jid "")))
+              (t
+               (progn
+                 (admin-presence comp jid "Login failure" "xa")
+                 (admin-msg comp jid (format nil "Login failure: ~A" err))))))
+          (admin-msg comp jid "(Disabling automatic reconnections.)")
+          (remhash jid (component-whatsapps comp)))
+        (admin-msg comp jid (format nil "Warning: A non-fatal WhatsApp error has occurred.~%You should be fine to continue, but if problems persist, consider re-connecting or re-registering.~%Details: ~A" err)))))
 
 (defun wa-handle-error (comp conn jid err bt)
   (with-wa-handler-context (comp conn jid)
