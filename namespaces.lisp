@@ -21,3 +21,4 @@
 (defparameter +unique-stanzas-ns+ "urn:xmpp:sid:0")
 (defparameter +chat-states-ns+ "http://jabber.org/protocol/chatstates")
 (defparameter +hints-ns+ "urn:xmpp:hints")
+(defparameter +entity-caps-ns+ "http://jabber.org/protocol/caps")

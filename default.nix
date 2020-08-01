@@ -676,6 +676,7 @@ buildLisp.program {
     "xmpp.lisp"
     "xep-0030.lisp"
     "xep-0363.lisp"
+    "xep-0115.lisp"
     "sqlite.lisp"
     "db.lisp"
     "stuff.lisp"

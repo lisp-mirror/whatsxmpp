@@ -23,6 +23,17 @@
   (format *debug-io* "Connection complete! \\o/")
   (emit :connected comp))
 
+(defparameter +whatsapp-user-disco-info-list+
+  `((disco-identity "whatsxmpp" "phone" "client")
+    ;; FIXME: The features here must be lexicographically sorted!
+    (disco-feature ,+entity-caps-ns+)
+    (disco-feature ,+chat-states-ns+)
+    (disco-feature ,+disco-info-ns+))
+  "List of calls to DISCO-IDENTITY and DISCO-FEATURE for WhatsApp users bridged through to XMPP.")
+(defparameter +whatsapp-user-entity-caps+
+  (generate-entity-caps +whatsapp-user-disco-info-list+)
+  "Entity caps string for a bridged WhatsApp user.")
+
 (defun disco-info-handler (comp &key to from &allow-other-keys)
   "Handles XEP-0030 disco#info requests."
   (format *debug-io* "~&disco#info: ~A~%" to)
@@ -45,7 +56,7 @@
               ((and user-name (not to-resource))
                `((disco-identity ,user-name "registered" "account")))
               ((and user-name (equal to-resource "whatsapp"))
-               `((disco-identity "whatsxmpp" "phone" "client")))
+               +whatsapp-user-disco-info-list+)
               (chat-subject
                `((disco-identity ,chat-subject "text" "conference")
                  (disco-feature ,+muc-ns+)
@@ -265,24 +276,21 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
   (with-wa-handler-context (comp conn jid)
     (format *debug-io* "~&ws-error ~A: ~A~%" jid err)
     (admin-msg comp jid
-               (format nil "WhatsApp websocket error: ~A" err))
+               (format nil "WhatsApp websocket error: ~A~%Will automatically reconnect, but if issues persist, try a re-connect or re-register." err))
     (admin-presence comp jid "WebSocket error" "away")
     (setf (gethash jid (component-whatsapps comp)) nil)))
 
 (defun wa-handle-ws-close (comp conn jid)
   (with-wa-handler-context (comp conn jid)
     (format *debug-io* "~&ws-close: ~A~%" jid)
-    (admin-msg comp jid
-               "WhatsApp websocket closed (will reconnect soon).")
-    (admin-presence comp jid "WebSocket closed" "away")
-    (setf (gethash jid (component-whatsapps comp)) nil)))
-
-(defun wa-handle-ws-open (comp conn jid)
-  (with-wa-handler-context (comp conn jid)
-    (format *debug-io* "~&ws-open: ~A~%" jid)
-    (admin-presence comp jid "Connected" "away")
-    (admin-msg comp jid
-               "WhatsApp websocket connected.")))
+    (when (nth-value 1 (gethash jid (component-whatsapps comp)))
+      ;; If true, we're still doing automatic reconnections.
+      ;; Otherwise, we will have already yelled at the user for
+      ;; whatever caused them to disconnect, so don't do anything here.
+      (admin-msg comp jid
+                 "WhatsApp websocket closed (will reconnect soon).")
+      (admin-presence comp jid "WebSocket closed" "away")
+      (setf (gethash jid (component-whatsapps comp)) nil))))
 
 (defun wa-handle-ws-qrcode (comp conn jid qrcode)
   (with-wa-handler-context (comp conn jid)
@@ -306,6 +314,18 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
       (admin-presence comp jid status)
       (whatscl::send-presence conn :available)
       (format *debug-io* "~&ws-connected: ~A (as ~A)~%" jid wa-jid))))
+
+(defun wa-handle-disconnect (comp conn jid kind)
+  (with-wa-handler-context (comp conn jid)
+    (format *debug-io* "~&disconnect for ~A: ~A" jid kind)
+    (let ((reason
+            (case kind
+              (:replaced "Connection replaced by other WhatsApp Web session")
+              (:removed "Connection removed in mobile app"))))
+      (admin-msg comp jid (format nil "Error: ~A." reason))
+      (admin-presence comp jid reason "xa"))
+    (admin-msg comp jid "(Disabling automatic reconnections.)")
+    (remhash jid (component-whatsapps comp))))
 
 (defun wa-handle-error-status-code (comp conn jid err)
   (with-wa-handler-context (comp conn jid)
@@ -524,6 +544,11 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                                                   (component-name comp)))
             (cxml:with-element "status"
               (cxml:text status))
+            (cxml:with-element "c"
+              (cxml:attribute "xmlns" +entity-caps-ns+)
+              (cxml:attribute "hash" "sha-1")
+              (cxml:attribute "node" "https://git.theta.eu.org/eta/whatsxmpp")
+              (cxml:attribute "ver" +whatsapp-user-entity-caps+))
             (cxml:with-element "x"
               (cxml:attribute "xmlns" +vcard-avatar-ns+)
               (if avatar-sha1
@@ -854,11 +879,11 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
               (cxml:attribute "xmlns" +chat-states-ns+))))))))
 
 (defun bind-wa-handlers (comp conn jid)
-  (on :ws-open conn (lambda () (wa-handle-ws-open comp conn jid)))
   (on :ws-close conn (lambda (&rest args)
                        (declare (ignore args))
                        (wa-handle-ws-close comp conn jid)))
   (on :ws-error conn (lambda (e) (wa-handle-ws-error comp conn jid e)))
+  (on :disconnect conn (lambda (k) (wa-handle-disconnect comp conn jid k)))
   (on :error conn (lambda (e backtrace) (wa-handle-error comp conn jid e backtrace)))
   (on :error-status-code conn (lambda (e) (wa-handle-error-status-code comp conn jid e)))
   (on :qrcode conn (lambda (text) (wa-handle-ws-qrcode comp conn jid text)))
