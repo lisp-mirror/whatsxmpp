@@ -44,7 +44,7 @@
         ,@(multiple-value-bind
                 (to-hostname to-localpart to-resource)
               (parse-jid to)
-            (declare (ignore to-hostname))
+            (declare (ignore to-hostname to-resource))
             (let* ((uid (get-user-id from))
                    (user-name (get-contact-name uid to-localpart))
                    (chat-subject (get-user-chat-subject uid to-localpart)))
@@ -53,9 +53,7 @@
                `((disco-identity "whatsxmpp bridge" "xmpp" "gateway")
                  (disco-feature ,+disco-items-ns+)
                  (disco-feature ,+muc-ns+)))
-              ((and user-name (not to-resource))
-               `((disco-identity ,user-name "registered" "account")))
-              ((and user-name (equal to-resource "whatsapp"))
+              (user-name
                +whatsapp-user-disco-info-list+)
               (chat-subject
                `((disco-identity ,chat-subject "text" "conference")
