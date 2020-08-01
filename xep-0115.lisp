@@ -24,6 +24,8 @@ WARNING: You must pre-sort DISCO-INFO-LIST according to the rules in XEP-0115 §
                         ;; intentionally take the same lambda lists,
                         ;; we can just do this.
                         (apply #'format-disco-identity call))
-                      identities)
+                      ;; NREVERSE because pushing things does it the wrong
+                      ;; way round (FIXME, inefficient)
+                      (nreverse identities))
               ;; DISCO-FEATURE takes one argument (the feature name)
-              (mapcar #'car features)))))))
+              (mapcar #'car (nreverse features))))))))
