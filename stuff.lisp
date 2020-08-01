@@ -40,7 +40,6 @@
   (with-component-data-lock (comp)
     `((cxml:with-element "query"
         (cxml:attribute "xmlns" ,+disco-info-ns+)
-        (disco-feature +disco-info-ns+)
         ,@(multiple-value-bind
                 (to-hostname to-localpart to-resource)
               (parse-jid to)
@@ -51,12 +50,14 @@
             (cond
               ((equal to (component-name comp))
                `((disco-identity "whatsxmpp bridge" "xmpp" "gateway")
+                 (disco-feature ,+disco-info-ns+)
                  (disco-feature ,+disco-items-ns+)
                  (disco-feature ,+muc-ns+)))
               (user-name
                +whatsapp-user-disco-info-list+)
               (chat-subject
                `((disco-identity ,chat-subject "text" "conference")
+                 (disco-feature ,+disco-info-ns+)
                  (disco-feature ,+muc-ns+)
                  (disco-feature ,+muc-stable-id-ns+)
                  (disco-feature ,+unique-stanzas-ns+)
