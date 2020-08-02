@@ -878,6 +878,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                ((eql type :composing) "composing")
                ((eql type :paused) "paused")
                ((eql type :available) "active")
+               ((eql type :unavailable) "gone")
                (t (return-from wa-handle-presence)))))
       (unless participant ; Groups hard
         (let ((from-jid (concatenate 'string
