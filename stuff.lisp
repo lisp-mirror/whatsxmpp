@@ -89,14 +89,17 @@
   (concatenate 'string "admin@" (component-name comp) "/adminbot"))
 
 (defparameter *admin-help-text*
-  "This is a very beta WhatsApp to XMPP bridge!
+  (format nil
+  "** whatsxmpp, version ~A, a theta.eu.org project **
 Commands:
 - register: set up the bridge
 - connect: manually connect to WhatsApp
 - stop: disconnect from WhatsApp, and disable automatic reconnections
 - status: get your current status
 - getroster: trigger an XEP-0144 roster item exchange (in some clients, this'll pop up a window asking to add contacts to your roster)
-- help: view this help text")
+- help: view this help text
+- refresh-chats: force the bridge to update member lists + subject for all of your group chats"
+  +version+))
 
 (defparameter *reconnect-every-secs* 5
   "Interval between calls to WA-RESETUP-USERS.")
@@ -634,6 +637,13 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
     (format *debug-io* "~&got contact ~A for ~A~%" contact jid)
     (add-wa-contact comp conn jid contact)))
 
+(defun request-wa-chat-metadata (comp conn jid wx-localpart)
+  "Request chat metadata for WX-LOCALPART (a MUC localpart) for the user with JID."
+  (format *debug-io* "~&requesting chat metadata for ~A from ~A~%" wx-localpart jid)
+  (whatscl::get-group-metadata conn (whatsxmpp-localpart-to-wa-jid wx-localpart)
+                               (lambda (conn meta)
+                                 (wa-handle-group-metadata comp conn jid wx-localpart meta))))
+
 (defun handle-wa-chat-invitation (comp conn jid uid localpart &key noretry)
   "Checks to see whether the group chat LOCALPART has any metadata; if not, requests some. If it does, and the user hasn't been invited to that group chat yet, send them an invitation."
   (unless (uiop:string-prefix-p "g" localpart)
@@ -661,12 +671,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
               (bind-parameters update-stmt "invited" chat-id)
               (sqlite:step-statement update-stmt))
             (unless noretry
-              (format *debug-io* "~&requesting chat metadata for ~A from ~A~%" localpart jid)
-              (whatscl::get-group-metadata conn (whatsxmpp-localpart-to-wa-jid localpart)
-                                           (lambda (conn meta)
-                                             (wa-handle-group-metadata comp conn jid localpart meta)))))))))
-
-
+              (request-wa-chat-metadata comp conn jid localpart)))))))
 
 (defun add-wa-chat (comp conn jid ct-jid)
   "Adds the JID CT-JID to the list of the user's groupchats, if it is a groupchat."
@@ -827,9 +832,13 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
 (defun wa-handle-group-metadata (comp conn jid localpart data)
   (with-wa-handler-context (comp conn jid)
     (let* ((uid (get-user-id jid))
-           (cid (get-user-chat-id uid localpart)))
+           (cid (get-user-chat-id uid localpart))
+           (subject (whatscl::cassoc :subject data)))
+      (unless cid
+        (setf cid (insert-user-chat uid localpart)))
       (format *debug-io* "~&got group metadata for ~A from ~A~%" localpart jid)
-      (unless (whatscl::cassoc :subject data)
+      (unless subject
+        (admin-msg comp jid (format nil "Warning: Failed to update group ~A: received ~A~%This warning usually appears when trying to get information for a group you're no longer in, and can be safely ignored." localpart data))
         (warn "Received incomplete group metadata for ~A from ~A: ~A" localpart jid data)
         (return-from wa-handle-group-metadata))
       (when cid
@@ -838,8 +847,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
              (delete-members-stmt "DELETE FROM user_chat_members WHERE chat_id = ?")
              (insert-member-stmt "INSERT INTO user_chat_members (chat_id, wa_jid, resource, affiliation) VALUES (?, ?, ?, ?)"))
           (with-transaction
-              (let ((subject (whatscl::cassoc :subject data)))
-                (bind-parameters update-subject-stmt subject cid))
+            (bind-parameters update-subject-stmt subject cid)
             (sqlite:step-statement update-subject-stmt)
             (sqlite:step-statement delete-members-stmt)
             (loop
@@ -859,6 +867,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                                          "member"))))
                    (sqlite:step-statement insert-member-stmt)
                    (sqlite:reset-statement insert-member-stmt)))
+          (admin-msg comp jid (format nil "New or updated WhatsApp group chat: \"~A\" (xmpp:~A@~A?join)" subject localpart (component-name comp)))
           (handle-wa-chat-invitation comp conn jid uid localpart :noretry t))))))
 
 (defun wa-handle-presence (comp conn jid &key for-jid type participant &allow-other-keys)
@@ -880,12 +889,19 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
             (cxml:with-element chat-state
               (cxml:attribute "xmlns" +chat-states-ns+))))))))
 
+(defun wa-handle-chat-modified (comp conn jid chat-jid)
+  (with-wa-handler-context (comp conn jid)
+    (let ((wx-localpart (wa-jid-to-whatsxmpp-localpart chat-jid)))
+      (format *debug-io* "~&chat-modified: ~A for ~A~&" wx-localpart jid)
+      (request-wa-chat-metadata comp conn jid wx-localpart))))
+
 (defun bind-wa-handlers (comp conn jid)
   (on :ws-close conn (lambda (&rest args)
                        (declare (ignore args))
                        (wa-handle-ws-close comp conn jid)))
   (on :ws-error conn (lambda (e) (wa-handle-ws-error comp conn jid e)))
   (on :disconnect conn (lambda (k) (wa-handle-disconnect comp conn jid k)))
+  (on :chat-modified conn (lambda (k) (wa-handle-chat-modified comp conn jid k)))
   (on :error conn (lambda (e backtrace) (wa-handle-error comp conn jid e backtrace)))
   (on :error-status-code conn (lambda (e) (wa-handle-error-status-code comp conn jid e)))
   (on :qrcode conn (lambda (text) (wa-handle-ws-qrcode comp conn jid text)))
@@ -1021,6 +1037,16 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
              (reply "WhatsApp connections disabled."))
            (when conn
              (whatscl::close-connection conn))))
+        ((equal body "refresh-chats")
+         (let ((conn (gethash stripped (component-whatsapps comp))))
+           (if conn
+               (let ((chats (get-user-groupchats uid)))
+                 (reply (format nil "Refreshing metadata for ~A groupchats...~%When the metadata refresh is complete, you'll need to rejoin all of your groupchats (most easily accomplished by reconnecting yourself to XMPP)."
+                                (length chats)))
+                 (loop
+                   for (localpart . subject) in chats
+                   do (request-wa-chat-metadata comp conn stripped localpart)))
+               (reply "You're not connected to WhatsApp."))))
         (t
          (reply "Unknown command. Try `help` for a list of supported commands."))))))
 
@@ -1272,7 +1298,8 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
         (unless wa-jid
           (return-from whatsxmpp-chat-state-handler))
         (unless conn
-          (warn "Can't send chat state, since user connection is offline"))
+          (warn "Can't send chat state, since user connection is offline")
+          (return-from whatsxmpp-chat-state-handler))
         (whatscl::send-presence conn presence-type
                                 (unless (eql presence-type :active)
                                   wa-jid))))))

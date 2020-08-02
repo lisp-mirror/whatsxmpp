@@ -94,7 +94,7 @@
 (defun insert-user-chat (uid wa-id)
   "Inserts a user chat with localpart WA-ID into the database for the user with UID."
   (with-prepared-statements
-      ((insert-stmt "INSERT INTO user_chats (user_id, wa_jid) VALUES (?, ?)"))
+      ((insert-stmt "INSERT INTO user_chats (user_id, wa_jid) VALUES (?, ?) ON CONFLICT DO NOTHING"))
     (bind-parameters insert-stmt uid wa-id)
     (sqlite:step-statement insert-stmt)))
 
