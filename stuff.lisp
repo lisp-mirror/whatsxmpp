@@ -154,7 +154,7 @@ MEDIA-TYPE is one of (:image :video :audio :document)."
                                    filename length-bytes mime-type)
          (lambda (slot)
            (destructuring-bind ((put-url . headers) get-url) slot
-             (format *debug-io* "~&got put-url: ~A~%   get-url: ~A~%" put-url get-url)
+             (format *debug-io* "~&got put-url: ~A~%    get-url: ~A~%" put-url get-url)
              (with-promise (resolve reject)
                (bt:make-thread
                 (lambda ()
@@ -437,7 +437,10 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                                (cxml:with-element "stanza-id"
                                  (cxml:attribute "xmlns" +unique-stanzas-ns+)
                                  (cxml:attribute "id" xmpp-id)
-                                 (cxml:attribute "by" group-localpart))
+                                 (cxml:attribute "by" (concatenate 'string
+                                                                   group-localpart
+                                                                   "@"
+                                                                   (component-name comp))))
                                (cxml:with-element "origin-id"
                                  (cxml:attribute "xmlns" +unique-stanzas-ns+)
                                  (cxml:attribute "id" wa-id)))
