@@ -12,6 +12,7 @@
    (:file "xmpp")
    (:file "xep-0030")
    (:file "xep-0363")
+   (:file "xep-0115")
    (:file "sqlite")
    (:file "db")
    (:file "stuff")))

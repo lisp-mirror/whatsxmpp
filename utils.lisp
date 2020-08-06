@@ -16,3 +16,14 @@
 (defun child-elements (node)
   "Returns the child elements (excluding text nodes) of the CXML DOM node NODE."
   (remove-if-not #'dom:element-p (dom:child-nodes node)))
+
+(defmacro with-promise-from-thread (() &body forms)
+  "Return a promise that executes FORMS in a new thread, resolving the promise with the return value of (PROGN ,@FORMS) or rejecting it if an ERROR condition is thrown (with said condition)."
+  (let ((resolve (gensym))
+        (reject (gensym)))
+    `(with-promise (,resolve ,reject)
+       (bt:make-thread
+        (lambda ()
+          (handler-case
+              (,resolve (progn ,@forms))
+            (error (e) (,reject e))))))))
