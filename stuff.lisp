@@ -226,7 +226,7 @@ MEDIA-TYPE is one of (:image :video :audio :document)."
                        (format *debug-io* "~&upload failed! status ~A, body ~A~%" status-code body)
                        (error "HTTP upload failed with status ~A" status-code))
                      get-url))))
-             :name "whatsapp media download thread"))))))))
+             :name "whatsapp media download thread")))))))
 
 (defun send-qrcode (comp jid text)
   "Send a QR code containing TEXT to JID."
