@@ -855,7 +855,12 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
             (when old-conn
               (admin-msg comp jid "(destroying your old connection)")
               (whatscl::close-connection old-conn))
-            (whatscl::start-connection conn)))))))
+            (handler-case
+                (whatscl::start-connection conn)
+              (error (e)
+                (admin-msg comp jid (format nil "Connection failed:~% ~A" e))
+                (admin-msg comp jid "(will retry)")
+                (setf stored-conn nil)))))))))
 
 (defun start-user-registration (comp jid)
   "Register the JID as wanting to use the bridge COMP."
