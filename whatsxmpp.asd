@@ -15,4 +15,5 @@
    (:file "xep-0115")
    (:file "sqlite")
    (:file "db")
+   (:file "media")
    (:file "stuff")))
