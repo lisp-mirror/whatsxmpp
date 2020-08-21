@@ -679,6 +679,7 @@ buildLisp.program {
     "xep-0115.lisp"
     "sqlite.lisp"
     "db.lisp"
+    "media.lisp"
     "stuff.lisp"
   ];
   main = "whatsxmpp::main";
