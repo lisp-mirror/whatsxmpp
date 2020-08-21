@@ -65,14 +65,14 @@
       while (sqlite:step-statement get-stmt)
       append (column-values get-stmt))))
 
-(defun get-contact-name (uid localpart)
+(defun get-contact-name (uid localpart &key no-phone-number)
   "Get a name for LOCALPART, a possible contact for the user with ID UID."
   (with-prepared-statements
       ((get-stmt "SELECT name, notify FROM user_contacts WHERE user_id = ? AND wa_jid = ?"))
     (bind-parameters get-stmt uid localpart)
     (when (sqlite:step-statement get-stmt)
       (with-bound-columns (name notify) get-stmt
-        (or name notify (substitute #\+ #\u localpart))))))
+        (or name notify (unless no-phone-number (substitute #\+ #\u localpart)))))))
 
 (defun get-contact-status (uid localpart)
   "Get the contact status text for LOCALPART, a possible contact for the user with ID UID."

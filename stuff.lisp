@@ -908,13 +908,15 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                                            ct-localpart
                                            "@"
                                            (component-name comp)))
-                      (ct-name (get-contact-name uid ct-localpart)))
-                 (cxml:with-element "item"
-                   (cxml:attribute "action" "add")
-                   (cxml:attribute "jid" ct-jid)
-                   (cxml:attribute "name" ct-name)
-                   (cxml:with-element "group"
-                     (cxml:text "WhatsApp"))))))))))
+                      (ct-name (get-contact-name uid ct-localpart
+                                                 :no-phone-number t)))
+                 (when ct-name
+                   (cxml:with-element "item"
+                     (cxml:attribute "action" "add")
+                     (cxml:attribute "jid" ct-jid)
+                     (cxml:attribute "name" ct-name)
+                     (cxml:with-element "group"
+                       (cxml:text "WhatsApp")))))))))))
 
 (defun handle-admin-command (comp from body uid)
   "Handles an admin command sent to COMP."
