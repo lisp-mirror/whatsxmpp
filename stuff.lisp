@@ -435,7 +435,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                                 (lambda (conn result)
                                   (wa-handle-avatar-result comp conn jid localpart result))))
 
-(defun handle-wa-contact-presence (comp conn jid localpart &key noretry)
+(defun handle-wa-contact-presence (comp conn jid localpart &key noretry destination)
   "Send out a presence stanza for LOCALPART to JID, or queue requests for that user's status or avatar if they're lacking."
   (unless (uiop:string-prefix-p "u" localpart)
     (return-from handle-wa-contact-presence))
@@ -446,7 +446,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
         (get-contact-avatar-data uid localpart)
       (declare (ignore avatar-data))
       (if (and has-avatar-p status)
-          (with-presence (comp jid
+          (with-presence (comp (or destination jid)
                                :from (concatenate 'string
                                                   localpart
                                                   "@"
@@ -1148,7 +1148,8 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                (admin-presence comp from admin-status admin-show)))
             ((or (not uid) (not conn)) (respond-with-unavailable))
             ((get-contact-name uid to-localpart)
-             (handle-wa-contact-presence comp conn stripped to-localpart))
+             (handle-wa-contact-presence comp conn stripped to-localpart
+                                         :destination from))
             (t (respond-with-unavailable))))))))
 
 (defun whatsxmpp-presence-subscribe-handler (comp &key from to id &allow-other-keys)
