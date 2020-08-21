@@ -1094,9 +1094,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
     (multiple-value-bind (to-hostname to-localpart to-resource)
         (parse-jid to)
       (declare (ignore to-hostname))
-      ;; (format *debug-io* "~&presence to: ~A from: ~A~%" to from)
       (let* ((stripped (strip-resource from))
-             (conn (gethash stripped (component-whatsapps comp)))
              (uid (get-user-id stripped))
              (x-element (get-node-with-xmlns (child-elements stanza) +muc-ns+)))
         (cond
@@ -1126,19 +1124,6 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                                   :stanza-type "presence"
                                   :id id :to from :from to
                                   :e e))))
-          ((equal to-localpart "admin")
-           (progn
-             (unless uid
-               (return-from whatsxmpp-presence-handler))
-             (multiple-value-bind (admin-status admin-show)
-                 (get-admin-status comp stripped)
-               (format *debug-io* "~&sending presences of everyone to ~A~%" from)
-               (admin-presence comp from admin-status admin-show)
-               (when conn
-                 (loop
-                   for localpart in (get-contact-localparts uid)
-                   do (handle-wa-contact-presence comp conn stripped localpart))
-                 (whatscl::send-presence conn :available)))))
           (t nil))))))
 
 (defun whatsxmpp-presence-probe-handler (comp &key from to id &allow-other-keys)
