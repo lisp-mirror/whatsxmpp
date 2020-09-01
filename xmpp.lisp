@@ -63,6 +63,13 @@
   (flet ((is-the-node (node) (and (dom:element-p node) (equal (dom:get-attribute node "xmlns") xmlns))))
     (find-if #'is-the-node nodes)))
 
+(defun get-node-text (node)
+  "Gets the node's text."
+  (let ((child-nodes (dom:child-nodes node)))
+    (if (> (length child-nodes) 0)
+        (dom:node-value (elt child-nodes 0))
+        "")))
+
 (defun handle-stream-error (comp stanza)
   (flet ((is-error-node (node)
            (equal (dom:namespace-uri node) +streams-ns+))

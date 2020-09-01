@@ -153,6 +153,40 @@ let
         "png.lisp"
       ];
     };
+    zpb-exif = let
+      src = builtins.fetchTarball {
+        url = "https://www.xach.com/lisp/zpb-exif.tgz";
+        sha256 = "15s227jhby55cisz14xafb0p1ws2jmrg2rrbbd00lrb97im84hy6";
+      };
+    in buildLisp.library {
+      name = "zpb-exif";
+      deps = [ salza2 ];
+      srcs = map (f: src + ("/" + f)) [
+        "exif.lisp"
+      ];
+    };
+    skippy = let
+      src = builtins.fetchTarball {
+        url = "https://www.xach.com/lisp/skippy.tgz";
+        sha256 = "1n8925qz19w00qc67z3hc97fpmfhi0r54dd50fzqm24vhyb7qwc2";
+      };
+    in buildLisp.library {
+      name = "skippy";
+      deps = [ salza2 ];
+      srcs = map (f: src + ("/" + f)) [
+        "package.lisp"
+        "conditions.lisp"
+        "types.lisp"
+        "bitstream.lisp"
+        "lzw.lisp"
+        "color-table.lisp"
+        "canvas.lisp"
+        "data-stream.lisp"
+        "image.lisp"
+        "gif89a.lisp"
+        "load-gif.lisp"
+      ];
+    };
     puri = let
       src = builtins.fetchTarball {
         url = "http://files.kpe.io/puri/puri-1.5.7.tar.gz";
@@ -515,6 +549,279 @@ let
         "util.lisp"
       ];
     };
+    com-gigamonkeys-binary-data = let
+      src = depot.third_party.fetchFromGitHub {
+        owner = "gigamonkey";
+        repo = "monkeylib-binary-data";
+        rev = "22e908976d7f3e2318b7168909f911b4a00963ee";
+        sha256 = "072v417vmcnvmyh8ddq9vmwwrizm7zwz9dpzi14qy9nsw8q649zw";
+      };
+    in buildLisp.library {
+      name = "com.gigamonkeys.binary-data";
+      deps = [ alexandria ];
+      srcs = map (f: src + ("/" + f)) [
+        "packages.lisp"
+        "binary-data.lisp"
+        "common-datatypes.lisp"
+      ];
+    };
+    ieee-floats = let
+      src = depot.third_party.fetchFromGitHub {
+        owner = "marijnh";
+        repo = "ieee-floats";
+        rev = "566b51a005e81ff618554b9b2f0b795d3b29398d";
+        sha256 = "1xyj49j9x3lc84cv3dhbf9ja34ywjk1c46dklx425fxw9mkwm83m";
+      };
+    in buildLisp.library {
+      name = "ieee-floats";
+      deps = [];
+      srcs = map (f: src + ("/" + f)) [
+        "ieee-floats.lisp"
+      ];
+    };
+    cl-jpeg = let
+      src = depot.third_party.fetchFromGitHub {
+        owner = "sharplispers";
+        repo = "cl-jpeg";
+        rev = "ec557038128df6895fbfb743bfe8faf8ec2534af";
+        sha256 = "1bkkiqz8fqldlj1wbmrccjsvxcwj98h6s4b6gslr3cg2wmdv5xmy";
+      };
+    in buildLisp.library {
+      name = "cl-jpeg";
+      deps = [];
+      srcs = map (f: src + ("/" + f)) [
+        "package.lisp"
+        "jpeg.lisp"
+        "io.lisp"
+      ];
+    };
+    deflate = let
+      src = depot.third_party.fetchFromGitHub {
+        owner = "pmai";
+        repo = "deflate";
+        rev = "fb940e63b89a6c4d168153dbf046552e106eb8a5";
+        sha256 = "1jpdjnxh6cw2d8hk70r2sxn92is52s9b855irvwkdd777fdciids";
+      };
+    in buildLisp.library {
+      name = "deflate";
+      deps = [];
+      srcs = map (f: src + ("/" + f)) [
+        "deflate.lisp"
+      ];
+    };
+    trivial-features = let
+      src = depot.third_party.fetchFromGitHub {
+        owner = "trivial-features";
+        repo = "trivial-features";
+        rev = "e7bb968d1e0b00aaf06e0671a866a81dbfe99bee";
+        sha256 = "1iczrsl561fz9f71dzals16749fccznm4jn8nmxnqas1qk7b331k";
+      };
+    in buildLisp.library {
+      name = "trivial-features";
+      deps = [];
+      srcs = map (f: src + ("/src/" + f)) [
+        "tf-sbcl.lisp"
+      ];
+    };
+    opticl-core = let
+      src = depot.third_party.fetchFromGitHub {
+        owner = "slyrus";
+        repo = "opticl-core";
+        rev = "b7cd13d26df6b824b216fbc360dc27bfadf04999";
+        sha256 = "0458bllabcdjghfrqx6aki49c9qmvfmkk8jl75cfpi7q0i12kh95";
+      };
+    in buildLisp.library {
+      name = "opticl-core";
+      deps = [ alexandria ];
+      srcs = map (f: src + ("/" + f)) [
+        "package.lisp"
+        "opticl-core.lisp"
+      ];
+    };
+    retrospectiff = let
+      src = depot.third_party.fetchFromGitHub {
+        owner = "slyrus";
+        repo = "retrospectiff";
+        rev = "c2a69d77d5010f8cdd9045b3e36a08a73da5d321";
+        sha256 = "0qsn9hpd8j2kp43dk05j8dczz9zppdff5rrclbp45n3ksk9inw8i";
+      };
+    in buildLisp.library {
+      name = "retrospectiff";
+      deps = [ com-gigamonkeys-binary-data flexi-streams ieee-floats cl-jpeg deflate opticl-core ];
+      srcs = map (f: src + ("/" + f)) [
+        "package.lisp"
+        "constants.lisp"
+        "globals.lisp"
+        "util.lisp"
+        "bit-array.lisp"
+        "lzw.lisp"
+        "jpeg.lisp"
+        "deflate.lisp"
+        "packbits.lisp"
+        "compression.lisp"
+        "binary-types.lisp"
+        "ifd.lisp"
+        "tiff-image.lisp"
+        "retrospectiff.lisp"
+        "retrospectiff2.lisp"
+      ];
+    };
+    cl-tga = let
+      src = depot.third_party.fetchFromGitHub {
+        owner = "fisxoj";
+        repo = "cl-tga";
+        rev = "4dc2f7b8a259b9360862306640a07a23d4afaacc";
+        sha256 = "03k3npmn0xd3fd2m7vwxph82av2xrfb150imqrinlzqmzvz1v1br";
+      };
+    in buildLisp.library {
+      name = "cl-tga";
+      deps = [];
+      srcs = map (f: src + ("/" + f)) [
+        "package.lisp"
+        "cl-tga.lisp"
+      ];
+    };
+    mmap = let
+      src = depot.third_party.fetchFromGitHub {
+        owner = "Shinmera";
+        repo = "mmap";
+        rev = "ba2e98c67e25f0fb8ff838238561120a23903ce7";
+        sha256 = "0qd0xp20i1pcfn12kkapv9pirb6hd4ns7kz4zf1mmjwykpsln96q";
+      };
+    in buildLisp.library {
+      name = "mmap";
+      deps = [ cffi ];
+      srcs = map (f: src + ("/" + f)) [
+        "package.lisp"
+        "generic.lisp"
+        "posix.lisp"
+      ];
+    };
+    static-vectors = let
+      src = depot.third_party.fetchFromGitHub {
+        owner = "sionescu";
+        repo = "static-vectors";
+        rev = "67f2ed0da2244f3c2a69d3440eddcc14a3ad33f0";
+        sha256 = "0prdwkyggr9wqwr7blhrb3hprsvbcgwn7144f7v4iy7i8621d8pq";
+      };
+    in buildLisp.library {
+      name = "static-vectors";
+      deps = [ alexandria cffi ];
+      srcs = map (f: src + ("/src/" + f)) [
+        "pkgdcl.lisp"
+        "constantp.lisp"
+        "impl-sbcl.lisp"
+        "constructor.lisp"
+        "cffi-type-translator.lisp"
+      ];
+    };
+    swap-bytes = let
+      src = depot.third_party.fetchFromGitHub {
+        owner = "sionescu";
+        repo = "swap-bytes";
+        rev = "253ab928b91b8a1c3cea0434e87b8da5ce3c6014";
+        sha256 = "1rs1166rabdlws4pyvsrwl32x476dh2yw15p56097mp8ixmcb0ap";
+      };
+    in buildLisp.library {
+      name = "swap-bytes";
+      deps = [ trivial-features ];
+      srcs = map (f: src + ("/" + f)) [
+        "package.lisp"
+        "sbcl-defknowns.lisp"
+        "sbcl-vops.lisp"
+        "sbcl.lisp"
+        "network.lisp"
+        "endianness.lisp"
+      ];
+    };
+    threebz = let
+      src = depot.third_party.fetchFromGitHub {
+        owner = "3b";
+        repo = "3bz";
+        rev = "d6119083b5e0b0a6dd3abc2877936c51f3f3deed";
+        sha256 = "0fyxzyf2b6sc0w8d9g4nlva861565z6f3xszj0lw29x526dd9rhj";
+      };
+    in buildLisp.library {
+      name = "3bz";
+      deps = [ alexandria cffi mmap trivial-features nibbles babel ];
+      srcs = map (f: src + ("/" + f)) [
+        "package.lisp"
+        "tuning.lisp"
+        "util.lisp"
+        "constants.lisp"
+        "types.lisp"
+        "huffman-tree.lisp"
+        "ht-constants.lisp"
+        "io-common.lisp"
+        "io-mmap.lisp"
+        "io.lisp"
+        "deflate.lisp"
+        "checksums.lisp"
+        "zlib.lisp"
+        "gzip.lisp"
+        "api.lisp"
+      ];
+    };
+    pngload = let
+      src = depot.third_party.fetchFromGitHub {
+        owner = "bufferswap";
+        repo = "pngload";
+        rev = "b2e56733dd5d86a56b20c665676b86e566b4e223";
+        sha256 = "15dkm3ba7byxk8qs6d3xnd58ybvjl6cjz75392z5fq5cqygbgfq5";
+      };
+    in buildLisp.library {
+      name = "pngload";
+      deps = [ threebz alexandria cffi mmap parse-float static-vectors swap-bytes (buildLisp.bundled "uiop") zpb-exif ];
+      srcs = map (f: src + ("/src/" + f)) [
+        "package.lisp"
+        "common.lisp" # aha!
+        "source.lisp"
+        "source-ffi.lisp"
+        "properties.lisp"
+        "chunk.lisp"
+        "chunk-types.lisp"
+        "conditions.lisp"
+        "datastream.lisp"
+        "deinterlace.lisp"
+        "decode.lisp"
+        "metadata.lisp"
+        "png.lisp"
+        "png-mmap.lisp"
+      ];
+    };
+    opticl = let
+      src = depot.third_party.fetchFromGitHub {
+        owner = "slyrus";
+        repo = "opticl";
+        rev = "438881ae779fa4b113308a3c5c96783fd9618e02";
+        sha256 = "13sv7n1ry8yp3fawvpf3y3kf7abbqxqmk8zpx349k3wh063i7l1l";
+      };
+    in buildLisp.library {
+      name = "opticl";
+      deps = [ alexandria retrospectiff zpng pngload cl-jpeg skippy opticl-core cl-tga ];
+      srcs = map (f: src + ("/" + f)) [
+        "package.lisp"
+        "coerce.lisp"
+        # "colors.lisp"
+        "imageops.lisp"
+        "invert.lisp"
+        "transform.lisp"
+        "convolve.lisp"
+        "morphology.lisp"
+        "gamma.lisp"
+        "shapes.lisp"
+        "tiff.lisp"
+        "jpeg.lisp"
+        "png.lisp"
+        "pngload.lisp"
+        "pnm.lisp"
+        "gif.lisp"
+        "tga.lisp"
+        "io.lisp"
+        "cluster.lisp"
+        "thresholding.lisp"
+      ];
+    };
     nibbles = let
       src = depot.third_party.fetchFromGitHub {
         owner = "sharplispers";
@@ -667,7 +974,7 @@ in
 with lispPkgs;
 buildLisp.program {
   name = "whatsxmpp";
-  deps = [ whatscl blackbird cxml uuid cl-sqlite trivial-mimes drakma cl-qrencode trivial-backtrace ];
+  deps = [ whatscl blackbird cxml uuid cl-sqlite trivial-mimes drakma cl-qrencode trivial-backtrace opticl ];
   srcs = map (f: ./. + ("/" + f)) [
     "packages.lisp"
     "utils.lisp"

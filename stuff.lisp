@@ -1237,7 +1237,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                 (whatscl::send-message-read conn wa-jid wa-msgid))
               (warn "Got marker for unknown XMPP message ID ~A" marker-id)))))))
 
-(defun whatsxmpp-message-handler (comp &key from to body id &allow-other-keys)
+(defun whatsxmpp-message-handler (comp &key from to body id oob-url &allow-other-keys)
   "Handles a message sent to the whatsxmpp bridge."
   (with-component-data-lock (comp)
     (multiple-value-bind (to-hostname to-localpart to-resource)
@@ -1247,7 +1247,8 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
       (let* ((stripped (strip-resource from))
              (uid (get-user-id stripped))
              (conn (gethash stripped (component-whatsapps comp)))
-             (wa-jid (whatsxmpp-localpart-to-wa-jid to-localpart)))
+             (wa-jid (whatsxmpp-localpart-to-wa-jid to-localpart))
+             (user-resource (get-user-chat-resource uid to-localpart)))
         (labels
             ((send-error (e)
                (send-stanza-error comp
@@ -1278,7 +1279,9 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                                          :text "MUC PMs are (deliberately) not implemented. Message the user directly instead."
                                          :type "cancel")))
             (t
-             (let* ((user-resource (get-user-chat-resource uid to-localpart))
+             (let* ((content-to-send (if oob-url
+                                        (maybe-upload-whatsapp-media conn oob-url)
+                                        (promisify body)))
                     (callback (lambda (conn result)
                                 (wa-handle-message-send-result comp conn stripped
                                                                :orig-from from
@@ -1286,10 +1289,23 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                                                                :orig-id id
                                                                :orig-body body
                                                                :muc-resource user-resource
-                                                               :result result)))
-                    (msgid (whatscl::send-simple-text-message conn wa-jid body callback)))
-               (whatscl::send-presence conn :available)
-               (insert-user-message uid id msgid)))))))))
+                                                               :result result))))
+               (catcher
+                (attach
+                 content-to-send
+                 (lambda (content)
+                   (let ((msgid
+                           (etypecase content
+                             (whatscl::message-contents-image (whatscl::send-simple-image-message conn wa-jid content callback))
+                             (string (whatscl::send-simple-text-message conn wa-jid content callback)))))
+                     (whatscl::send-presence conn :available)
+                     (insert-user-message uid id msgid))))
+                (t (e)
+                   (format *error-output* "~&failed to send message! ~A~%" e)
+                   (send-error (make-condition 'stanza-error
+                                               :defined-condition "internal-server-error"
+                                               :text (princ-to-string e)
+                                               :type "wait"))))))))))))
 
 (defun whatsxmpp-load-users (comp)
   (with-component-data-lock (comp)

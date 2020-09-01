@@ -1,5 +1,5 @@
 (defsystem "whatsxmpp"
-  :depends-on ("usocket" "bordeaux-threads" "event-emitter" "blackbird" "cxml" "ironclad" "uuid" "sqlite" "whatscl" "drakma" "local-time" "trivial-timers" "trivial-backtrace" "trivial-mimes")
+  :depends-on ("usocket" "bordeaux-threads" "event-emitter" "blackbird" "cxml" "ironclad" "uuid" "sqlite" "whatscl" "drakma" "local-time" "trivial-timers" "trivial-backtrace" "trivial-mimes" "opticl")
   :serial t
   :build-operation "program-op"
   :build-pathname "whatsxmpp"

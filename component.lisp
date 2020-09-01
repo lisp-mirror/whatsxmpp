@@ -296,14 +296,17 @@
          (children (child-elements stanza))
          (body (get-node-named children "body"))
          (marker (get-node-with-xmlns children +chat-markers-ns+))
+         (oob-element (get-node-with-xmlns children +oob-ns+))
+         (oob-url-element (when oob-element
+                            (get-node-named (child-elements oob-element) "url")))
          (chat-state (get-node-with-xmlns children +chat-states-ns+)))
     (cond
       (body
-       (let* ((child-nodes (dom:child-nodes body))
-              (text (if (> (length child-nodes) 0)
-                        (dom:node-value (elt child-nodes 0))
-                        "")))
-         (emit :text-message comp :from from :to to :body text :id id :stanza stanza)))
+       (let* ((text (get-node-text body))
+              (oob-url (when oob-url-element
+                         (get-node-text oob-url-element))))
+         (emit :text-message comp :from from :to to :body text :id id :stanza stanza
+               :oob-url oob-url)))
       (marker
        (let ((marker-type (dom:tag-name marker))
              (msgid (dom:get-attribute marker "id")))

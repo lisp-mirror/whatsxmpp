@@ -2,6 +2,58 @@
 
 (in-package :whatsxmpp)
 
+(defun squonch-image-to-jpeg-thumbnail (opticl-image)
+  "Resize the provided OPTICL-IMAGE to a small 640x480 thumbnail and return an octet vector of JPEG data for this thumbnail."
+  (check-type opticl-image opticl:image)
+  (let* ((image-out-stream (flexi-streams:make-in-memory-output-stream))
+         (resized-image (opticl:resize-image opticl-image 480 640))
+         (useless (opticl:write-jpeg-stream image-out-stream resized-image)) ; squonch
+         (image-thumbnail (flexi-streams:get-output-stream-sequence image-out-stream)))
+    (declare (ignore useless))
+    (concatenate '(vector (unsigned-byte 8)) image-thumbnail)))
+
+(defun maybe-upload-whatsapp-media (conn media-url)
+  "If the media at MEDIA-URL can be sent natively as a WhatsApp upload, download it and re-host it on WhatsApp.
+Returns a promise that resolves with either a STRING (if the media could not be rehosted or is ineligible) or WHATSCL:MESSAGE-CONTENTS-IMAGE (if the media pointed to is an image and it's been successfully re-uploaded)."
+  (check-type media-url string)
+  (let ((opticl-function (opticl::get-image-stream-reader (pathname-type media-url))))
+    (if opticl-function
+        (attach
+         (download-remote-media media-url)
+         (lambda (media-data)
+           (let* ((image-stream (flexi-streams:make-in-memory-input-stream media-data))
+                  (image-mime (or (trivial-mimes:mime-lookup media-url)
+                                  (error "Couldn't guess image MIME type for ~A" media-url)))
+                  (parsed-image (funcall opticl-function image-stream))
+                  (squonched-image (squonch-image-to-jpeg-thumbnail parsed-image)))
+             (opticl:with-image-bounds (image-y image-x) parsed-image
+               (attach
+                (put-whatsapp-media-file conn media-data :image image-mime)
+                (lambda (file-info)
+                  (make-instance 'whatscl::message-contents-image
+                                 :file-info file-info
+                                 :width-px image-x
+                                 :height-px image-y
+                                 :jpeg-thumbnail squonched-image)))))))
+        (promisify media-url))))
+
+(defun download-remote-media (media-url)
+  "Returns a promise that downloads the remote MEDIA-URL and resolves with an octet vector of the downloaded data."
+  ;; FIXME FIXME FIXME: this function is a trivial DoS vector, if you provide an infinite file like time.gif,
+  ;; or a file that's like 1GB.
+  (check-type media-url string)
+  (with-promise-from-thread ()
+    (format *debug-io* "~&downloading remote media: ~A~%" media-url)
+    (multiple-value-bind (response status-code)
+        (drakma:http-request media-url
+                             :force-binary t)
+      (unless (eql status-code 200)
+        (format *error-output* "~&downloading failed! status ~A~%" status-code)
+        (error "Remote media download failed with status code ~A~~%%" status-code))
+      (check-type response (simple-array (unsigned-byte 8)))
+      (format *debug-io* "~&downloaded ~A (length: ~A)~%" media-url (length response))
+      response)))
+
 (defun put-whatsapp-media-file (conn file-data media-type mime-type)
   "Encrypts and uploads FILE-DATA (an octet vector), a WhatsApp media file of type MEDIA-TYPE (one of :IMAGE, :VIDEO, :AUDIO, or :DOCUMENT) to WhatsApp, returning a promise that resolves with a WHATSCL:FILE-INFO when done."
   (check-type file-data (simple-array (unsigned-byte 8)))
@@ -47,11 +99,11 @@
                  (format *debug-io* "~&got whatsapp uploaded media url ~A~%" url)
                  (make-instance 'whatscl::file-info
                                 :media-key media-key
-                                :url url
+                                :url (pb:string-field url)
                                 :sha256 file-sha256
                                 :enc-sha256 file-enc-sha256
                                 :length-bytes (length encrypted-blob)
-                                :mime-type mime-type))))))))))
+                                :mime-type (pb:string-field mime-type)))))))))))
 
 (defun upload-whatsapp-media-file (comp file-info media-type &optional filename)
   "Downloads the WhatsApp media file specified by FILE-INFO, uploads it via COMP, and returns a promise which resolves to the URL of the uploaded media.
@@ -117,28 +169,29 @@ MEDIA-TYPE is one of (:image :video :audio :document)."
                                     (file-length stream)
                                     "image/png")
           (lambda (slot)
-            (destructuring-bind ((put-url . headers) get-url) slot
-              (format *debug-io* "~&got put-url: ~A~%   get-url: ~A~%" put-url get-url)
-              (multiple-value-bind (body status-code)
-                  (drakma:http-request put-url
-                                       :additional-headers headers
-                                       :content-type "image/png"
-                                       :content-length content-length
-                                       :method :put
-                                       :content path)
-                (unless (and (>= status-code 200) (< status-code 300))
-                  (format *debug-io* "~&upload failed! status ~A, body ~A~%" status-code body)
-                  (error "HTTP upload failed with status ~A" status-code))
-                (with-component-data-lock (comp)
-                  (let ((ajid (admin-jid comp)))
-                    (admin-msg comp jid "WhatsApp Web registration: Scan the following QR code with your device! (Menu -> WhatsApp Web)")
-                    (with-message (comp jid :from ajid)
-                      (cxml:with-element "body"
-                        (cxml:text get-url))
-                      (cxml:with-element "x"
-                        (cxml:attribute "xmlns" +oob-ns+)
-                        (cxml:with-element "url"
-                          (cxml:text get-url))))
-                    (admin-msg comp jid "(Code expired? Be faster next time. Get a new one with `connect`.)"))))))))
+            (with-promise-from-thread ()
+              (destructuring-bind ((put-url . headers) get-url) slot
+                (format *debug-io* "~&got put-url: ~A~%   get-url: ~A~%" put-url get-url)
+                (multiple-value-bind (body status-code)
+                    (drakma:http-request put-url
+                                         :additional-headers headers
+                                         :content-type "image/png"
+                                         :content-length content-length
+                                         :method :put
+                                         :content path)
+                  (unless (and (>= status-code 200) (< status-code 300))
+                    (format *debug-io* "~&upload failed! status ~A, body ~A~%" status-code body)
+                    (error "HTTP upload failed with status ~A" status-code))
+                  (with-component-data-lock (comp)
+                    (let ((ajid (admin-jid comp)))
+                      (admin-msg comp jid "WhatsApp Web registration: Scan the following QR code with your device! (Menu -> WhatsApp Web)")
+                      (with-message (comp jid :from ajid)
+                        (cxml:with-element "body"
+                          (cxml:text get-url))
+                        (cxml:with-element "x"
+                          (cxml:attribute "xmlns" +oob-ns+)
+                          (cxml:with-element "url"
+                            (cxml:text get-url))))
+                      (admin-msg comp jid "(Code expired? Be faster next time. Get a new one with `connect`.)")))))))))
        (t (e)
           (admin-msg comp jid (format nil "Failed to upload QR code!~%Report the following error to the bridge admin: `~A`" e)))))))
