@@ -1189,6 +1189,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                  ((string= type "composing") :composing)
                  ((string= type "paused") :paused)
                  ((string= type "active") :available)
+                 ((string= type "gone") :unavailable)
                  (t (return-from whatsxmpp-chat-state-handler)))))
         (unless uid
           (warn "Got chat state for user that isn't registered")
@@ -1199,7 +1200,8 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
           (warn "Can't send chat state, since user connection is offline")
           (return-from whatsxmpp-chat-state-handler))
         (whatscl::send-presence conn presence-type
-                                (unless (eql presence-type :active)
+                                (unless (or (eql presence-type :available)
+                                            (eql presence-type :unavailable))
                                   wa-jid))))))
 
 (defun whatsxmpp-marker-handler (comp &key from to type marker-id id &allow-other-keys)
