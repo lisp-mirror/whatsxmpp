@@ -260,11 +260,9 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
 
 (defun wa-handle-error (comp conn jid err bt)
   (with-wa-handler-context (comp conn jid)
-    (format *debug-io* "~&whatscl error for ~A: ~A~%" jid err)
+    (format *debug-io* "~&whatscl error for ~A: ~A~%Backtrace:~A~%" jid err bt)
     (admin-msg comp jid
                (format nil "A programming error has been detected and your connection has been aborted unexpectedly.~%Report the following error to the bridge admin: ~A" err))
-    (admin-msg comp jid
-               (format nil "Backtrace:~%~A" bt))
     (admin-msg comp jid "(Disabling automatic reconnections.)")
     (admin-presence comp jid "Programming error" "xa")
     (remhash jid (component-whatsapps comp))))
