@@ -960,6 +960,14 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                    for (localpart . subject) in chats
                    do (request-wa-chat-metadata comp conn stripped localpart)))
                (reply "You're not connected to WhatsApp."))))
+        ((uiop:string-prefix-p "refresh-chat " body)
+         (let ((conn (gethash stripped (component-whatsapps comp)))
+               (localpart-to-use (subseq body #.(length "refresh-chat "))))
+           (if conn
+               (progn
+                 (reply (format nil "Refreshing metadata for ~A..." localpart-to-use))
+                 (request-wa-chat-metadata comp conn stripped localpart-to-use))
+               (reply "You're not connected to WhatsApp."))))
         (t
          (reply "Unknown command. Try `help` for a list of supported commands."))))))
 
