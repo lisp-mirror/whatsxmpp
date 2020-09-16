@@ -301,6 +301,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                      (warn "None of ~A's resources were joined to group ~A to receive message ~A!" jid group-localpart msg-id)))
                (progn
                  (warn "No chat in database for group ~A for ~A -- creating" group-localpart jid)
+                 (admin-msg comp jid (format nil "Received message in unknown new WhatsApp group chat ~A; you should receive an invitation soon..." (whatscl::key-jid key)))
                  (add-wa-chat comp conn jid (whatscl::key-jid key))
                  (return-from wa-message-key-to-stanza-headers)))))
         (t nil)))))
@@ -523,8 +524,6 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
             (progn
               (bind-parameters insert-stmt uid wx-localpart ct-name ct-notify)
               (sqlite:step-statement insert-stmt)))
-        (handle-wa-contact-presence-subscriptions comp jid wx-localpart)
-        (handle-wa-contact-presence comp conn jid wx-localpart)
         wx-localpart))))
 
 (defun wa-handle-contacts (comp conn jid contacts)
@@ -576,10 +575,15 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
               (request-wa-chat-metadata comp conn jid localpart)))))))
 
 (defun add-wa-chat (comp conn jid ct-jid)
-  "Adds the JID CT-JID to the list of the user's groupchats, if it is a groupchat."
+  "Adds the JID CT-JID to the list of the user's groupchats, if it is a groupchat. If it's a user JID, sends a presence subscription request if necessary."
   (let ((uid (get-user-id jid))
         (wx-localpart (wa-jid-to-whatsxmpp-localpart ct-jid)))
+    (when (uiop:string-prefix-p "u" wx-localpart)
+      ;; The user has an open chat with this other user, so they probably want a presence subscription.
+      (handle-wa-contact-presence-subscriptions comp jid wx-localpart)
+      (return-from add-wa-chat))
     (unless (uiop:string-prefix-p "g" wx-localpart)
+      (warn "Interesting localpart pased to ADD-WA-CHAT: ~A" wx-localpart)
       (return-from add-wa-chat))
     (assert uid () "No user ID for ~A!" jid)
     (unless (get-user-chat-id uid wx-localpart)
@@ -769,7 +773,6 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                                          "member"))))
                    (sqlite:step-statement insert-member-stmt)
                    (sqlite:reset-statement insert-member-stmt)))
-          (admin-msg comp jid (format nil "New or updated WhatsApp group chat: \"~A\" (xmpp:~A@~A?join)" subject localpart (component-name comp)))
           (handle-wa-chat-invitation comp conn jid uid localpart :noretry t))))))
 
 (defun wa-handle-presence (comp conn jid &key for-jid type participant &allow-other-keys)
