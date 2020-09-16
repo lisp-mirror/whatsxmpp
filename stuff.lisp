@@ -513,6 +513,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
       (with-prepared-statements
           ((get-stmt "SELECT id, name, notify FROM user_contacts WHERE user_id = ? AND wa_jid = ?")
            (update-stmt "UPDATE user_contacts SET name = ?, notify = ? WHERE id = ?")
+           (update-chat-names "UPDATE user_chat_members SET resource = ? WHERE wa_jid = ?")
            (insert-stmt "INSERT INTO user_contacts (user_id, wa_jid, name, notify) VALUES (?, ?, ?, ?)"))
         (bind-parameters get-stmt uid wx-localpart)
         (if (sqlite:step-statement get-stmt)
@@ -524,6 +525,9 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
             (progn
               (bind-parameters insert-stmt uid wx-localpart ct-name ct-notify)
               (sqlite:step-statement insert-stmt)))
+        ;; Update the resource in all chats the user is joined to, so we can use the user's actual name instead of a phone number if possible
+        (let ((newname (get-contact-name uid wx-localpart)))
+          (bind-parameters update-chat-names newname wx-localpart))
         wx-localpart))))
 
 (defun wa-handle-contacts (comp conn jid contacts)
