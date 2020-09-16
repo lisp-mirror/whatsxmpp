@@ -45,26 +45,25 @@ In other words, prepares STATEMENT once, then returns the prepared statement aft
        ,statement-sym)))
 
 (defmacro with-prepared-statement ((name statement) &body forms)
-  "Evaluates FORMS, binding a prepared statement with SQL text STATEMENT to NAME, and ensuring it is reset when control is transferred."
+  "Evaluates FORMS, binding a prepared statement with SQL text STATEMENT to NAME and making sure it is reset beforehand."
   `(bt:with-recursive-lock-held (*db-lock*)
      (let ((,name (prepared-statement ,statement)))
-       (multiple-value-prog1
-           (unwind-protect
-                (progn ,@forms)
-             (ignore-errors (sqlite:reset-statement ,name)))))))
+       (sqlite:reset-statement ,name)
+       (sqlite:clear-statement-bindings ,name)
+       ,@forms)))
 
 (defmacro with-prepared-statements (statements &body forms)
   "Like WITH-PREPARED-STATEMENT, but takes multiple statements."
   (let ((let-forms (loop for (name statement) in statements
                          collect `(,name (prepared-statement ,statement))))
         (reset-forms (loop for (name statement) in statements
-                           collect `(ignore-errors (sqlite:reset-statement ,name)))))
+                           collect `(progn
+                                      (sqlite:reset-statement ,name)
+                                      (sqlite:clear-statement-bindings ,name)))))
     `(bt:with-recursive-lock-held (*db-lock*)
        (let (,@let-forms)
-         (multiple-value-prog1
-             (unwind-protect
-                  (progn ,@forms))
-           (ignore-errors (progn ,@reset-forms)))))))
+         ,@reset-forms
+         ,@forms))))
 
 (defmacro column-values (statement)
   "Returns the values in the current row of the STATEMENT."
