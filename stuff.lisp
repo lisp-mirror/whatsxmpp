@@ -754,6 +754,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
              (insert-member-stmt "INSERT INTO user_chat_members (chat_id, wa_jid, resource, affiliation) VALUES (?, ?, ?, ?)"))
           (with-transaction
             (bind-parameters update-subject-stmt subject cid)
+            (bind-parameters delete-members-stmt cid)
             (sqlite:step-statement update-subject-stmt)
             (sqlite:step-statement delete-members-stmt)
             (loop
