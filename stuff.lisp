@@ -250,6 +250,11 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                  (admin-msg comp jid "Error: WhatsApp Web denied access. You may have violated the Terms of Service.")
                  (admin-presence comp jid "Access denied" "xa")
                  (update-session-data jid "")))
+              ((equal status-code 419)
+               (progn
+                 (admin-msg comp jid "Error: WhatsApp Web have invalidated this connection for some reason. You'll need to scan the QR code again. (It's unclear why this happens.")
+                 (admin-presence comp jid "Connection invalidated" "xa")
+                 (update-session-data jid "")))
               (t
                (progn
                  (admin-presence comp jid "Login failure" "xa")
