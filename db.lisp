@@ -9,6 +9,14 @@
       (when (sqlite:step-statement get-user)
         (first (column-values get-user))))))
 
+(defun get-user-jid (id)
+  "Get the user JID for the ID, or NIL if none exists."
+  (with-prepared-statement
+      (get-user "SELECT jid FROM users WHERE id = ?")
+      (bind-parameters get-user id)
+    (when (sqlite:step-statement get-user)
+      (first (column-values get-user)))))
+
 (defun get-user-contact-localparts (uid)
   "Returns a list of all contact localparts for UID."
   (with-prepared-statements

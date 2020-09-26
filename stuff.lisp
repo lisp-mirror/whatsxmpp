@@ -252,7 +252,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                  (update-session-data jid "")))
               ((equal status-code 419)
                (progn
-                 (admin-msg comp jid "Error: WhatsApp Web have invalidated this connection for some reason. You'll need to scan the QR code again. (It's unclear why this happens.")
+                 (admin-msg comp jid "Error: WhatsApp Web have invalidated this connection for some reason. You'll need to scan the QR code again. (It's unclear why this happens.)")
                  (admin-presence comp jid "Connection invalidated" "xa")
                  (update-session-data jid "")))
               (t
@@ -272,132 +272,30 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
     (admin-presence comp jid "Programming error" "xa")
     (remhash jid (component-whatsapps comp))))
 
-(defun wa-message-key-to-stanza-headers (comp conn jid msg-id msg-ts key)
-  "Takes KEY, a WHATSCL::MESSAGE-KEY, and returns (VALUES FROM TOS ID TYPE GROUP-LOCALPART) [i.e. the values of the 'from', 'to', 'id' and 'type' stanza headers, where TOS is a list of recipients], or NIL if no action should be taken to deliver the message."
-  (let* ((xmpp-id (concatenate 'string
-                               "wa-" msg-id "-" (write-to-string msg-ts)))
-         (group-localpart (wa-jid-to-whatsxmpp-localpart (whatscl::key-jid key)))
-         (uid (get-user-id jid))
-         (previous-xmpp-id (lookup-wa-msgid uid msg-id)))
-    (unless previous-xmpp-id
-      (typecase key
-        (whatscl::message-key-receiving
-         (progn
-           (format *debug-io* "~&direct message ~A for ~A~%" msg-id jid)
-           (values (concatenate 'string
-                                group-localpart
-                                "@"
-                                (component-name comp)
-                                "/whatsapp")
-                   (list jid) xmpp-id "chat" nil)))
-        (whatscl::message-key-group-receiving
-         (let* ((chat-id (get-user-chat-id uid group-localpart))
-                (participant-localpart (wa-jid-to-whatsxmpp-localpart (whatscl::key-participant key))))
-           (format *debug-io* "~&group message ~A in ~A for ~A~%" msg-id group-localpart jid)
-           (if chat-id
-               (let ((from-resource (or (get-participant-resource chat-id participant-localpart)
-                                        participant-localpart))
-                     (recipients (get-user-chat-joined uid group-localpart)))
-                 (if recipients
-                     (values (concatenate 'string
-                                          group-localpart "@" (component-name comp)
-                                          "/" from-resource)
-                             recipients xmpp-id "groupchat" group-localpart)
-                     (warn "None of ~A's resources were joined to group ~A to receive message ~A!" jid group-localpart msg-id)))
-               (progn
-                 (warn "No chat in database for group ~A for ~A -- creating" group-localpart jid)
-                 (admin-msg comp jid (format nil "Received message in unknown new WhatsApp group chat ~A; you should receive an invitation soon..." (whatscl::key-jid key)))
-                 (add-wa-chat comp conn jid (whatscl::key-jid key))
-                 (return-from wa-message-key-to-stanza-headers)))))
-        (t nil)))))
-
 (defun wa-handle-message (comp conn jid msg delivery-type)
   (declare (ignore delivery-type))
   (with-wa-handler-context (comp conn jid)
-    (let* ((key (whatscl::message-key msg))
-           (wa-id (whatscl::message-id msg))
-           (contents (whatscl::message-contents msg))
-           (wa-ts (whatscl::message-ts msg))
-           (uid (get-user-id jid))
-           (local-time:*default-timezone* local-time:+utc-zone+)
-           (ts (local-time:unix-to-timestamp wa-ts)))
-      (multiple-value-bind
-            (from recipients xmpp-id xmpp-type group-localpart)
-          (wa-message-key-to-stanza-headers comp conn jid wa-id wa-ts key)
-        (when from
-          (macrolet
-              ((send-message ((&key suppress-insert) &body contents)
-                 (let ((to-sym (gensym)))
-                   `(progn
-                      ;; Referencing lexical variables in a MACROLET! How hacky.
-                      (unless ,suppress-insert
-                        (insert-user-message uid xmpp-id wa-id))
-                      (loop
-                        for ,to-sym in recipients
-                        do (with-message (comp ,to-sym
-                                               :from from
-                                               :id xmpp-id
-                                               :type xmpp-type)
-                             ,@contents
-                             (cxml:with-element "delay"
-                               (cxml:attribute "xmlns" +delivery-delay-ns+)
-                               (cxml:attribute "stamp" (local-time:format-timestring nil ts)))
-                             (cxml:with-element "active"
-                               (cxml:attribute "xmlns" +chat-states-ns+))
-                             (when (and group-localpart (not ,suppress-insert))
-                               (cxml:with-element "stanza-id"
-                                 (cxml:attribute "xmlns" +unique-stanzas-ns+)
-                                 (cxml:attribute "id" xmpp-id)
-                                 (cxml:attribute "by" (concatenate 'string
-                                                                   group-localpart
-                                                                   "@"
-                                                                   (component-name comp))))
-                               (cxml:with-element "origin-id"
-                                 (cxml:attribute "xmlns" +unique-stanzas-ns+)
-                                 (cxml:attribute "id" wa-id)))
-                             (cxml:with-element "markable"
-                               (cxml:attribute "xmlns" +chat-markers-ns+))))))))
-            (let* ((qc (whatscl::message-quoted-contents-summary msg)))
-              (typecase contents
-                (whatscl::message-contents-text
-                 (let* ((contents-text (whatscl::contents-text contents))
-                        (text (format nil "~@[> ~A~%~]~A" qc contents-text)))
-                   (send-message ()
-                    (cxml:with-element "body"
-                      (cxml:text text)))))
-                (whatscl::message-contents-file
-                 (let* ((file-info (whatscl::contents-file-info contents))
-                        (media-type (whatscl::get-contents-media-type contents))
-                        (filename (when (typep contents 'whatscl::message-contents-document)
-                                    (whatscl::contents-filename contents)))
-                        (caption (whatscl::contents-caption contents))
-                        (upload-promise (upload-whatsapp-media-file comp file-info media-type filename)))
-                   (catcher
-                    (attach upload-promise
-                            (lambda (get-url)
-                              (with-component-data-lock (comp)
-                                (when (or caption qc)
-                                  (let ((text (format nil "~@[> ~A~%~]~@[~A~]" qc caption)))
-                                    (send-message (:suppress-insert t)
-                                     (cxml:with-element "body"
-                                       (cxml:text text)))))
-                                (send-message ()
-                                 (cxml:with-element "body"
-                                   (cxml:text get-url))
-                                 (cxml:with-element "x"
-                                   (cxml:attribute "xmlns" +oob-ns+)
-                                   (cxml:with-element "url"
-                                     (cxml:text get-url)))))))
-                    (error (e)
-                           (with-component-data-lock (comp)
-                             ;; Insert the thing into the database, so this message
-                             ;; doesn't repeat.
-                             (insert-user-message uid xmpp-id wa-id)
-                             (format *debug-io* "~&whatsapp media message ~A from ~A failed! error: ~A~%"
-                                     wa-id from e)
-                             (admin-msg comp jid
-                                        (format nil "Warning: Failed to process a media message sent to you by ~A:~%    ~A"
-                                                from e)))))))))))))))
+    (let ((uid (get-user-id jid)))
+      (when (lookup-wa-msgid uid (whatscl::message-id msg))
+        ;; Don't process the same WhatsApp message twice.
+        (return-from wa-handle-message))
+      (catcher
+       (attach (make-xmpp-messages-for-wa-message comp conn jid msg)
+               (lambda (messages)
+                 (with-component-data-lock (comp)
+                   (loop
+                     for x-msg in messages
+                     do (progn
+                          (deliver-xmpp-message comp x-msg)
+                          (when (orig-id x-msg)
+                            (insert-user-message uid (xmpp-id x-msg) (orig-id x-msg))))))))
+       (error (e)
+              (with-component-data-lock (comp)
+                (format *error-output* "~&processing of message ~A for ~A failed! error: ~A~%" (whatscl::message-id msg) jid e)
+                (insert-user-message uid (concatenate 'string "error-" (whatscl::message-id msg)) (whatscl::message-id msg))
+                (admin-msg comp jid
+                           (format nil "Warning: The bridge missed a message (whatsapp id ~A). The error was:~%~A"
+                                   (whatscl::message-id msg) e))))))))
 
 (defun get-avatar-data (avatar-url)
   "Fetches AVATAR-URL, using the database as a cache. Returns the SHA1 hash (lowercase) of the avatar data as first argument, and the actual octets as second."

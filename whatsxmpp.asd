@@ -16,4 +16,5 @@
    (:file "sqlite")
    (:file "db")
    (:file "media")
+   (:file "message")
    (:file "stuff")))
