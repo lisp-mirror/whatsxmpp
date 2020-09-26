@@ -141,3 +141,25 @@
     (loop
       while (sqlite:step-statement get-stmt)
       collect (with-bound-columns (localpart subject) get-stmt (cons localpart subject)))))
+
+(defun insert-xmpp-message (xm)
+  "Inserts XM, a groupchat XMPP-MESSAGE, into the database."
+  (assert (uiop:string-prefix-p "g" (conversation xm)) () "Tried to insert XMPP message for non-groupchat conversation ~A" (conversation xm))
+  (let ((chat-id (or
+                  (get-user-chat-id (uid xm) (conversation xm))
+                  (error "Couldn't find chat id for conversation ~A / uid ~A"
+                         (conversation xm) (uid xm))))
+        (ts-unix (local-time:timestamp-to-unix (timestamp xm))))
+    (with-prepared-statements
+        ((insert-stmt "INSERT INTO user_chat_history (user_id, chat_id, user_from, ts_unix, xmpp_id, orig_id, body, oob_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"))
+      (bind-parameters insert-stmt (1 (uid xm)) (2 chat-id) (3 (from xm)) (4 ts-unix) (5 (xmpp-id xm)) (6 (orig-id xm)) (7 (body xm)) (8 (oob-url xm)))
+      (sqlite:step-statement insert-stmt))))
+
+(defun lookup-wa-msgid-in-history (uid wa-msgid)
+  "Look up the XMPP ID for the WhatsApp message ID WA-MSGID, when received for the user UID."
+  (with-prepared-statements
+      ((get-stmt "SELECT xmpp_id FROM user_chat_history WHERE user_id = ? AND orig_id = ?"))
+    (bind-parameters get-stmt uid wa-msgid)
+    (when (sqlite:step-statement get-stmt)
+      (with-bound-columns (xid) get-stmt
+        xid))))

@@ -272,6 +272,40 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
     (admin-presence comp jid "Programming error" "xa")
     (remhash jid (component-whatsapps comp))))
 
+(defun do-chat-history-request (comp conn jid uid requested-jid)
+  "Retrieves full chat history for the REQUESTED-JID, and inserts it into the database."
+  (whatscl::get-full-chat-history
+   conn requested-jid
+   (lambda (conn chat-history)
+     (with-wa-handler-context (comp conn jid)
+       (bt:make-thread
+        (lambda ()
+          (let ((num-inserted 0))
+            (loop
+              for msg in chat-history
+              do (unless (lookup-wa-msgid-in-history uid (whatscl::message-id msg))
+                   (incf num-inserted)
+                   (catcher
+                    (attach (with-component-data-lock (comp)
+                              (make-xmpp-messages-for-wa-message comp conn jid msg))
+                            (lambda (messages)
+                              (with-component-data-lock (comp)
+                                (loop
+                                  for x-msg in messages
+                                  do (progn
+                                       (insert-xmpp-message x-msg)
+                                       (incf num-inserted))))))
+                    (error (e)
+                           (warn "Couldn't insert chat history message: ~A" e)))))
+            (with-component-data-lock (comp)
+              (admin-msg comp jid (format nil "Inserted ~A (of ~A) chat history messages for ~A." num-inserted (length chat-history) requested-jid)))))
+        :name (format nil "chat history insertion thread for ~A / ~A" jid requested-jid))
+       (if (eql (length chat-history) 0)
+           (admin-msg comp jid (format nil "Warning: chat history request for ~A errored, or returned no results." requested-jid))
+           (admin-msg comp jid (format nil "Inserting ~A chat history messages for ~A..." (length chat-history) requested-jid)))))
+   :sleep-secs 0.2
+   :chunk-size 100))
+
 (defun wa-handle-message (comp conn jid msg delivery-type)
   (declare (ignore delivery-type))
   (with-wa-handler-context (comp conn jid)
@@ -287,6 +321,8 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                      for x-msg in messages
                      do (progn
                           (deliver-xmpp-message comp x-msg)
+                          (when (uiop:string-prefix-p "g" (conversation x-msg))
+                            (insert-xmpp-message x-msg))
                           (when (orig-id x-msg)
                             (insert-user-message uid (xmpp-id x-msg) (orig-id x-msg))))))))
        (error (e)
@@ -565,6 +601,13 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
               (let* ((new-from (concatenate 'string orig-to "/" muc-resource))
                      (group-localpart (nth-value 1 (parse-jid orig-to)))
                      (recipients (get-user-chat-joined (get-user-id jid) group-localpart)))
+                (insert-xmpp-message (make-instance 'xmpp-message
+                                                    :conversation group-localpart
+                                                    :uid (get-user-id jid)
+                                                    :from muc-resource
+                                                    :timestamp (local-time:now)
+                                                    :xmpp-id orig-id
+                                                    :body orig-body))
                 (loop
                   for recip in recipients
                   do (with-message (comp recip :from new-from :id orig-id :type "groupchat")
@@ -858,6 +901,22 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
              (reply "WhatsApp connections disabled."))
            (when conn
              (whatscl::close-connection conn))))
+        ((equal body "full-history-fetch")
+         (let ((conn (gethash stripped (component-whatsapps comp))))
+           (if conn
+               (let ((chats (get-user-groupchats uid)))
+                 (reply (format nil "Fetching full chat history for ~A groupchats. This will probably take a long time.~%Note that even after completion is reported, some background media uploading may be in progress."
+                                (length chats)))
+                 (bt:make-thread
+                  (lambda ()
+                    (loop
+                      for (localpart . subject) in chats
+                      do (progn
+                           (with-wa-handler-context (comp conn stripped)
+                             (do-chat-history-request comp conn stripped uid (whatsxmpp-localpart-to-wa-jid localpart)))
+                           (sleep 0.1))))
+                  :name "whatsxmpp chat history fetcher"))
+               (reply "You're not connected to WhatsApp."))))
         ((equal body "refresh-chats")
          (let ((conn (gethash stripped (component-whatsapps comp))))
            (if conn

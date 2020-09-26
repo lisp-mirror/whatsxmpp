@@ -60,3 +60,15 @@ CREATE TABLE user_chat_joined (
        chat_id INT NOT NULL REFERENCES user_chats,
        jid VARCHAR NOT NULL
 );
+
+CREATE TABLE user_chat_history (
+  id INTEGER PRIMARY KEY,
+  user_id INT NOT NULL REFERENCES users,
+  chat_id INT NOT NULL REFERENCES user_chats,
+  user_from VARCHAR NOT NULL,
+  ts_unix INT NOT NULL,
+  xmpp_id VARCHAR NOT NULL,
+  orig_id VARCHAR,
+  body VARCHAR NOT NULL,
+  oob_url VARCHAR
+);

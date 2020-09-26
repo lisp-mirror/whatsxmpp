@@ -112,6 +112,7 @@ FIXME: the above behaviour is a bit meh."
       do (format oss "> ~A~%" item))
     (get-output-stream-string oss)))
 
+
 (defun deliver-xmpp-message (comp msg)
   "Deliver MSG, an XMPP-MESSAGE, to the intended destinations on COMP."
   (let* ((jid (get-user-jid (uid msg)))
@@ -146,7 +147,8 @@ FIXME: the above behaviour is a bit meh."
            (unless one-to-one-p
              (cxml:with-element "stanza-id"
                (cxml:attribute "xmlns" +unique-stanzas-ns+)
-               (cxml:attribute "id" (xmpp-id msg)))
+               (cxml:attribute "id" (xmpp-id msg))
+               (cxml:attribute "by" (concatenate 'string (conversation msg) "@" component-host)))
              (when (orig-id msg)
                (cxml:with-element "origin-id"
                  (cxml:attribute "xmlns" +unique-stanzas-ns+)
