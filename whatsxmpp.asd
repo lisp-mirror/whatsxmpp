@@ -13,6 +13,7 @@
    (:file "xep-0030")
    (:file "xep-0363")
    (:file "xep-0115")
+   (:file "xep-0313")
    (:file "sqlite")
    (:file "db")
    (:file "media")

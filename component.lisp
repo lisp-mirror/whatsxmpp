@@ -247,6 +247,10 @@
               :disco-items)
              ((and (equal xmlns +vcard-temp-ns+) (equal tag-name "vCard"))
               :vcard-temp-get)
+             ((and (equal xmlns +mam-ns+) (equal tag-name "query"))
+              :mam-query)
+             ((and (equal xmlns +ping-ns+) (equal tag-name "ping"))
+              :ping)
              (t
               :generic-iq))))
     (call-component-iq-handler comp handler-type
@@ -261,7 +265,7 @@
     (let ((type (dom:get-attribute stanza "type"))
           (id (dom:get-attribute stanza "id"))
           (from (dom:get-attribute stanza "from")))
-      (if (equal type "get")
+      (if (or (equal type "get") (equal type "set"))
           (handle-iq-get comp id from stanza)
           (symbol-macrolet
               ((promise (gethash id (component-promises comp))))

@@ -112,6 +112,39 @@ FIXME: the above behaviour is a bit meh."
       do (format oss "> ~A~%" item))
     (get-output-stream-string oss)))
 
+(defun deliver-mam-history-message (comp msg to-jid &optional query-id)
+  "Deliver MSG, an XMPP-MESSAGE, to TO-JID as a piece of MAM history, as part of the response to a MAM query with QUERY-ID."
+  (let* ((component-host (component-name comp))
+         (mam-from (concatenate 'string (conversation msg) "@" component-host))
+         (real-from (concatenate 'string mam-from "/" (from msg))))
+    (with-message (comp to-jid
+                   :from mam-from
+                   :type nil)
+      (cxml:with-element "result"
+        (cxml:attribute "xmlns" +mam-ns+)
+        (when query-id
+          (cxml:attribute "queryid" query-id))
+        (cxml:attribute "id" (xmpp-id msg))
+        (cxml:with-element "forwarded"
+          (cxml:attribute "xmlns" +forwarded-ns+)
+          (cxml:with-element "delay"
+            (cxml:attribute "xmlns" +delivery-delay-ns+)
+            (cxml:attribute "stamp" (local-time:format-timestring nil (timestamp msg))))
+          (cxml:with-element "message"
+            (cxml:attribute "from" real-from)
+            (cxml:attribute "xmlns" +client-ns+)
+            (cxml:attribute "type" "groupchat")
+            (cxml:with-element "body"
+              (cxml:text (body msg)))
+            (when (oob-url msg)
+              (cxml:with-element "x"
+                (cxml:attribute "xmlns" +oob-ns+)
+                (cxml:with-element "url"
+                  (cxml:text (oob-url msg)))))
+            (when (orig-id msg)
+              (cxml:with-element "origin-id"
+                (cxml:attribute "xmlns" +unique-stanzas-ns+)
+                (cxml:attribute "id" (orig-id msg))))))))))
 
 (defun deliver-xmpp-message (comp msg)
   "Deliver MSG, an XMPP-MESSAGE, to the intended destinations on COMP."

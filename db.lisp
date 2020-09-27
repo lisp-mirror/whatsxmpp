@@ -35,6 +35,15 @@
       (with-bound-columns (id) get-stmt
         id))))
 
+(defun get-user-chat-localpart (chat-id)
+  "Get the user chat localpart for CHAT-ID, or NIL if none exists."
+  (with-prepared-statements
+      ((get-stmt "SELECT wa_jid FROM user_chats WHERE id = ?"))
+    (bind-parameters get-stmt chat-id)
+    (when (sqlite:step-statement get-stmt)
+      (with-bound-columns (localpart) get-stmt
+        localpart))))
+
 (defun get-user-chat-subject (uid localpart)
   "Get the user chat subject of LOCALPART for UID, or NIL if none exists."
   (with-prepared-statements
@@ -145,11 +154,13 @@
 (defun insert-xmpp-message (xm)
   "Inserts XM, a groupchat XMPP-MESSAGE, into the database."
   (assert (uiop:string-prefix-p "g" (conversation xm)) () "Tried to insert XMPP message for non-groupchat conversation ~A" (conversation xm))
-  (let ((chat-id (or
-                  (get-user-chat-id (uid xm) (conversation xm))
-                  (error "Couldn't find chat id for conversation ~A / uid ~A"
-                         (conversation xm) (uid xm))))
-        (ts-unix (local-time:timestamp-to-unix (timestamp xm))))
+  (let* ((chat-id (or
+                   (get-user-chat-id (uid xm) (conversation xm))
+                   (error "Couldn't find chat id for conversation ~A / uid ~A"
+                          (conversation xm) (uid xm))))
+
+         (local-time:*default-timezone* local-time:+utc-zone+)
+         (ts-unix (local-time:timestamp-to-unix (timestamp xm))))
     (with-prepared-statements
         ((insert-stmt "INSERT INTO user_chat_history (user_id, chat_id, user_from, ts_unix, xmpp_id, orig_id, body, oob_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"))
       (bind-parameters insert-stmt (1 (uid xm)) (2 chat-id) (3 (from xm)) (4 ts-unix) (5 (xmpp-id xm)) (6 (orig-id xm)) (7 (body xm)) (8 (oob-url xm)))
@@ -163,3 +174,70 @@
     (when (sqlite:step-statement get-stmt)
       (with-bound-columns (xid) get-stmt
         xid))))
+
+(defun get-chat-history-ts (uid chat-id xmpp-id)
+  "Look up the UNIX timestamp for the given UID, CHAT-ID and XMPP-ID."
+  (with-prepared-statements
+      ((get-stmt "SELECT ts_unix FROM user_chat_history WHERE user_id = ? AND chat_id = ? AND xmpp_id = ?"))
+    (bind-parameters get-stmt uid chat-id xmpp-id)
+    (when (sqlite:step-statement get-stmt)
+      (with-bound-columns (tsu) get-stmt
+        tsu))))
+
+(defun query-archive (uid chat-id &key start end (limit 100) reference-stanza-id forward-page)
+  "Query the chat history archive for the chat identified by CHAT-ID and UID. Optionally narrow the query using START and END (UNIX timestamps), returning at most LIMIT items (which is clamped to 100).
+If an RSM REFERENCE-STANZA-ID is provided, narrow the query to be either after (T) or before (NIL) the history entry with that stanza ID, depending on the value of FORWARD-PAGE (see brackets)."
+  (let ((statement (make-string-output-stream))
+        (localpart (get-user-chat-localpart chat-id))
+        (local-time:*default-timezone* local-time:+utc-zone+)
+        (args (list chat-id uid)) ; WARNING this list is nreverse'd later!
+        (items-returned 0)
+        (sqlite-stmt))
+    (format statement "SELECT user_from, ts_unix, xmpp_id, orig_id, body, oob_url FROM user_chat_history WHERE user_id = ? AND chat_id = ?")
+    (when reference-stanza-id
+      (let ((reference-ts (or
+                           (get-chat-history-ts uid chat-id reference-stanza-id)
+                           (error "Couldn't locate reference stanza ID ~A" reference-stanza-id))))
+        (if forward-page
+            (setf start reference-ts)
+            (setf end reference-ts))))
+    (when start
+      (format statement " AND ts_unix > ?")
+      (push start args))
+    (when end
+      (format statement " AND ts_unix < ?")
+      (push end args))
+    (unless limit
+      (setf limit 100))
+    (when (> limit 100)
+      (setf limit 100)) ; clamp me owo
+    ;; We copy a trick from biboumi: in order to figure out whether there are
+    ;; more results if not for the limit existing, simply increment the limit
+    ;; by 1 and see if you get the extra element.
+    (format statement " ORDER BY ts_unix ~A LIMIT ~A" (if forward-page "ASC" "DESC") (1+ limit))
+    (setf args (nreverse args))
+    (bt:with-recursive-lock-held (*db-lock*)
+      (let ((stmt-text (get-output-stream-string statement)))
+        (setf sqlite-stmt (sqlite:prepare-statement *db* stmt-text)))
+      (loop
+        for param in args
+        for n from 1
+        do (sqlite:bind-parameter sqlite-stmt n param))
+      (values
+       (funcall
+        (if forward-page #'identity #'nreverse)
+        (loop
+          while (sqlite:step-statement sqlite-stmt)
+          do (incf items-returned)
+          while (<= items-returned limit)
+          collect (with-bound-columns (from ts-unix xmpp-id orig-id body oob-url) sqlite-stmt
+                    (make-instance 'xmpp-message
+                                   :uid uid
+                                   :conversation localpart
+                                   :from from
+                                   :timestamp (local-time:unix-to-timestamp ts-unix)
+                                   :xmpp-id xmpp-id
+                                   :orig-id orig-id
+                                   :body body
+                                   :oob-url oob-url))))
+       (<= items-returned limit)))))

@@ -59,6 +59,7 @@
                `((disco-identity ,chat-subject "text" "conference")
                  (disco-feature ,+disco-info-ns+)
                  (disco-feature ,+muc-ns+)
+                 (disco-feature ,+mam-ns+)
                  (disco-feature ,+muc-stable-id-ns+)
                  (disco-feature ,+unique-stanzas-ns+)
                  (disco-feature "muc_hidden")
@@ -271,6 +272,61 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
     (admin-msg comp jid "(Disabling automatic reconnections.)")
     (admin-presence comp jid "Programming error" "xa")
     (remhash jid (component-whatsapps comp))))
+
+(defun whatsxmpp-ping-handler (comp &key to from &allow-other-keys)
+  (declare (ignore comp to from))
+  ;; This is a stub!
+  nil)
+
+(defun whatsxmpp-mam-query-handler (comp &key to from stanza &allow-other-keys)
+  "Handles Message Archive Management (MAM) queries."
+  (with-component-data-lock (comp)
+    (let* ((stripped (strip-resource from))
+           (local-time:*default-timezone* local-time:+utc-zone+)
+           (uid (or
+                 (get-user-id stripped)
+                 (error 'stanza-error
+                        :defined-condition "registration-required"
+                        :text "You must be a bridge user to run MAM queries."
+                        :type "auth")))
+           (chat-id (or
+                     (get-user-chat-id uid (nth-value 1 (parse-jid to)))
+                     (error 'stanza-error
+                            :defined-condition "item-not-found"
+                            :text "Couldn't find a WhatsApp chat with that JID."
+                            :type "modify")))
+           (query-params (alist-from-mam-query (elt (child-elements stanza) 0))))
+      (format *debug-io* "~&MAM query for ~A from ~A:~%  params ~A~%" from to query-params)
+      (labels ((unix-from-mam (time-input)
+                 (alexandria:when-let ((time time-input))
+                   (local-time:timestamp-to-unix (local-time:parse-timestring time))))
+               (unix-from-mam-params (keyword params)
+                 (unix-from-mam (whatscl::cassoc keyword params))))
+        (multiple-value-bind (messages completep)
+            (query-archive uid chat-id
+                           :start (unix-from-mam-params :start query-params)
+                           :end (unix-from-mam-params :end query-params)
+                           :limit (alexandria:when-let
+                                      ((limit (whatscl::cassoc :max query-params)))
+                                    (parse-integer limit))
+                           :reference-stanza-id (or
+                                                 (whatscl::cassoc :after query-params)
+                                                 (whatscl::cassoc :before query-params))
+                           :forward-page (whatscl::cassoc :after query-params))
+          (format *debug-io* "~&MAM query for ~A returned ~A messages (complete: ~A)" from (length messages) completep)
+          (loop
+            for msg in messages
+            do (deliver-mam-history-message comp msg from (whatscl::cassoc :query-id query-params)))
+          `((cxml:with-element "fin"
+              (cxml:attribute "xmlns" ,+mam-ns+)
+              (cxml:attribute "complete" ,(if completep "true" "false"))
+              (cxml:with-element "set"
+                (cxml:attribute "xmlns" ,+rsm-ns+)
+                ,@(when (> (length messages) 0)
+                    `((cxml:with-element "first"
+                        (cxml:text ,(xmpp-id (first messages))))
+                      (cxml:with-element "last"
+                        (cxml:text ,(xmpp-id (car (last messages)))))))))))))))
 
 (defun do-chat-history-request (comp conn jid uid requested-jid)
   "Retrieves full chat history for the REQUESTED-JID, and inserts it into the database."
@@ -523,7 +579,8 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
         (wx-localpart (wa-jid-to-whatsxmpp-localpart ct-jid)))
     (when (uiop:string-prefix-p "u" wx-localpart)
       ;; The user has an open chat with this other user, so they probably want a presence subscription.
-      (handle-wa-contact-presence-subscriptions comp jid wx-localpart)
+      (when (get-contact-name uid wx-localpart) ;; FIXME
+        (handle-wa-contact-presence-subscriptions comp jid wx-localpart))
       (return-from add-wa-chat))
     (unless (uiop:string-prefix-p "g" wx-localpart)
       (warn "Interesting localpart pased to ADD-WA-CHAT: ~A" wx-localpart)
@@ -601,6 +658,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
               (let* ((new-from (concatenate 'string orig-to "/" muc-resource))
                      (group-localpart (nth-value 1 (parse-jid orig-to)))
                      (recipients (get-user-chat-joined (get-user-id jid) group-localpart)))
+                ;; FIXME: You can break the database's UNIQUE constraint here.
                 (insert-xmpp-message (make-instance 'xmpp-message
                                                     :conversation group-localpart
                                                     :uid (get-user-id jid)
@@ -905,7 +963,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
          (let ((conn (gethash stripped (component-whatsapps comp))))
            (if conn
                (let ((chats (get-user-groupchats uid)))
-                 (reply (format nil "Fetching full chat history for ~A groupchats. This will probably take a long time.~%Note that even after completion is reported, some background media uploading may be in progress."
+                 (reply (format nil "Fetching full chat history for ~A groupchats. This will probably take a long time.~%Note that even after completion is reported, some background media uploading may be in progress.~%If the WhatsApp connection is interrupted midway through the fetch, you will need to retry the fetch."
                                 (length chats)))
                  (bt:make-thread
                   (lambda ()
@@ -1297,7 +1355,9 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
 (defun register-whatsxmpp-handlers (comp)
   (register-component-iq-handler comp :disco-info #'disco-info-handler)
   (register-component-iq-handler comp :vcard-temp-get #'whatsxmpp-vcard-temp-handler)
-  (register-component-iq-handler comp :disco-items #'disco-items-handler))
+  (register-component-iq-handler comp :disco-items #'disco-items-handler)
+  (register-component-iq-handler comp :mam-query #'whatsxmpp-mam-query-handler)
+  (register-component-iq-handler comp :ping #'whatsxmpp-ping-handler))
 
 (defun whatsxmpp-init ()
   "Initialise the whatsxmpp bridge."

@@ -984,6 +984,7 @@ buildLisp.program {
     "xep-0030.lisp"
     "xep-0363.lisp"
     "xep-0115.lisp"
+    "xep-0313.lisp"
     "sqlite.lisp"
     "db.lisp"
     "media.lisp"

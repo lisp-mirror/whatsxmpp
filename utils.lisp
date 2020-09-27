@@ -17,6 +17,10 @@
   "Returns the child elements (excluding text nodes) of the CXML DOM node NODE."
   (remove-if-not #'dom:element-p (dom:child-nodes node)))
 
+(defun nil-empty (seq)
+  "If SEQ (a sequence) is empty, returns NIL; otherwise, returns SEQ."
+  (unless (eql (length seq) 0) seq))
+
 (defmacro with-promise-from-thread (() &body forms)
   "Return a promise that executes FORMS in a new thread, resolving the promise with the return value of (PROGN ,@FORMS) or rejecting it if an ERROR condition is thrown (with said condition)."
   (let ((resolve (gensym))

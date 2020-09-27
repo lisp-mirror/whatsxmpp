@@ -72,3 +72,5 @@ CREATE TABLE user_chat_history (
   body VARCHAR NOT NULL,
   oob_url VARCHAR
 );
+
+CREATE UNIQUE INDEX user_chat_history_unique ON user_chat_history (user_id, chat_id, xmpp_id);
