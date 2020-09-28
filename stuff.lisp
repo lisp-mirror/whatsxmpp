@@ -312,7 +312,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                            :reference-stanza-id (or
                                                  (whatscl::cassoc :after query-params)
                                                  (whatscl::cassoc :before query-params))
-                           :forward-page (whatscl::cassoc :after query-params))
+                           :forward-page (assoc :after query-params))
           (format *debug-io* "~&MAM query for ~A returned ~A messages (complete: ~A)" from (length messages) completep)
           (loop
             for msg in messages
