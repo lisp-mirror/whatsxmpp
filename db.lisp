@@ -175,6 +175,60 @@
       (with-bound-columns (xid) get-stmt
         xid))))
 
+(defun user-archiving-enabled-p (uid)
+  "Returns a generalized boolean for whether the user with ID UID has archiving enabled or not."
+  (with-prepared-statements
+      ((get-stmt "SELECT enable_archiving FROM users WHERE id = ?"))
+    (bind-parameters get-stmt uid)
+    (when (sqlite:step-statement get-stmt)
+      (with-bound-columns (ena) get-stmt
+        (not (eql ena 0))))))
+
+(defun user-set-archiving-state (uid enabled)
+  "Set the user's archiving state for the user with ID UID to ENABLED (either T or NIL)."
+  (let ((ena (if enabled 1 0)))
+    (with-prepared-statements
+        ((set-stmt "UPDATE users SET enable_archiving = ? WHERE id = ?"))
+      (bind-parameters set-stmt ena uid)
+      (sqlite:step-statement set-stmt))))
+
+(defun jid-admin-p (jid)
+  "Returns a generalized boolean for whether the JID is a bridge administrator."
+  (with-prepared-statements
+      ((get-stmt "SELECT id FROM administrators WHERE jid = ?"))
+    (bind-parameters get-stmt jid)
+    (when (sqlite:step-statement get-stmt)
+      t)))
+
+(defun db-unregister-user (uid)
+  "Unregister the user with ID UID."
+  (with-prepared-statements
+      ((remove-user-stmt "DELETE FROM users WHERE id = ?")
+       (remove-contacts-stmt "DELETE FROM user_contacts WHERE user_id = ?")
+       (remove-messages-stmt "DELETE FROM user_messages WHERE user_id = ?")
+       (remove-chats-stmt "DELETE FROM user_chats WHERE user_id = ?")
+       (get-chats-stmt "SELECT id FROM user_chats WHERE user_id = ?")
+       (remove-chat-members-stmt "DELETE FROM user_chat_members WHERE chat_id = ?")
+       (remove-chat-joined-stmt "DELETE FROM user_chat_joined WHERE chat_id = ?")
+       (remove-chat-history-stmt "DELETE FROM user_chat_history WHERE user_id = ?"))
+    (with-transaction ()
+      (bind-parameters get-chats-stmt uid)
+      (loop
+        while (sqlite:step-statement get-chats-stmt)
+        do (with-bound-columns (chatid) get-chats-stmt
+             (loop
+               for stmt in (list remove-chat-members-stmt remove-chat-joined-stmt remove-chat-history-stmt)
+               do (progn
+                    (sqlite:reset-statement stmt)
+                    (bind-parameters stmt chatid)
+                    (sqlite:step-statement stmt)))))
+      (loop
+        for stmt in (list remove-chats-stmt remove-messages-stmt remove-contacts-stmt remove-user-stmt)
+        do (progn
+             (sqlite:reset-statement stmt)
+             (bind-parameters stmt uid)
+             (sqlite:step-statement stmt))))))
+
 (defun get-chat-history-ts (uid chat-id xmpp-id)
   "Look up the UNIX timestamp for the given UID, CHAT-ID and XMPP-ID."
   (with-prepared-statements

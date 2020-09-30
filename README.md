@@ -23,20 +23,21 @@ additional caveats: take a look at the requirements list.
 ## What works?
 
 - Sending private messages/DMs both ways
-- *Basic* support for MUCs
+- Support for MUCs
 - Magically populating your roster using [XEP-0144: Roster Item Exchange](https://xmpp.org/extensions/xep-0144.html)
 - Downloading/decrypting media from WhatsApp and uploading it to your XEP-0363 server
 - Avatars
 - Read receipts
 - Status text
 - Typing notifications / chat state
+- [XEP-0313: Message Archive Management](https://xmpp.org/extensions/xep-0313.html) in MUCs *only when enabled in configuration*
+- Fetching your entire message history from WhatsApp and making it available via MAM *only when enabled in configuration*
+- Users joining and leaving MUCs, and the topic changing (partial, requires XMPP-side rejoin)
+- Uploading images to WhatsApp natively
 
 ## What doesn't yet?
 
-- [XEP-0313: Message Archive Management](https://xmpp.org/extensions/xep-0313.html) in MUCs (DMs should be done by your server)
-- Support for users joining and leaving MUCs
-- Support for the topic changing in MUCs
-- Uploading media to WhatsApp (currently, it just comes through as a link)
+- Uploading non-image media to WhatsApp (currently, it just comes through as a link)
 - Probably other stuff
 
 ## What you'll need
@@ -95,6 +96,27 @@ A few things to note here:
 - The `component_name` is whatever you specified in the prosody config for this component.
 - The `shared_secret` is the same as the `component_secret`.
 - The `upload_component_name` is the name of the XEP-0363 HTTP Upload component.
+
+#### Enabling archiving and full history fetches
+
+If you want to be able to use the MAM and full history fetch features, you'll need to run some additional commands in the above `sqlite3` window.
+
+To let users use MAM:
+
+```
+sqlite> UPDATE configuration SET allow_archiving = true;
+```
+
+To let users fetch their WhatsApp history:
+
+```
+sqlite> UPDATE configuration SET allow_history_fetches = true;
+```
+
+**WARNING:** These options are NOT recommended for people wishing to run a public instance of the bridge. (In fact, if you're doing that, come talk to us in the support MUC first, as there are various things you probably want to be made aware of.)
+
+Note that users must still enable archiving manually via talking to the admin user and executing the `enable-archiving` command (and similarly for history fetches, which use the `full-history-fetch` command).
+
 
 ### Step 3: run the bridge
 

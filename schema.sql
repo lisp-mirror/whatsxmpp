@@ -4,24 +4,28 @@ CREATE TABLE configuration (
        port INT NOT NULL,
        component_name VARCHAR NOT NULL,
        shared_secret VARCHAR NOT NULL,
-       upload_component_name VARCHAR NOT NULL
+       upload_component_name VARCHAR NOT NULL,
+       allow_archiving BOOL NOT NULL DEFAULT false,
+       allow_history_fetches BOOL NOT NULL DEFAULT false
 );
 
 CREATE TABLE users (
        id INTEGER PRIMARY KEY,
        jid VARCHAR UNIQUE NOT NULL,
-       session_data VARCHAR
+       session_data VARCHAR,
+       enable_archiving BOOL NOT NULL DEFAULT false
 );
 
 CREATE TABLE user_contacts (
        id INTEGER PRIMARY KEY,
        user_id INT NOT NULL REFERENCES users,
-       wa_jid VARCHAR UNIQUE NOT NULL,
+       wa_jid VARCHAR NOT NULL,
        subscription_state VARCHAR NOT NULL DEFAULT 'none',
        avatar_url VARCHAR,
        name VARCHAR,
        notify VARCHAR,
-       status VARCHAR
+       status VARCHAR,
+       UNIQUE(user_id, wa_jid)
 );
 
 CREATE TABLE user_messages (
@@ -74,3 +78,8 @@ CREATE TABLE user_chat_history (
 );
 
 CREATE UNIQUE INDEX user_chat_history_unique ON user_chat_history (user_id, chat_id, xmpp_id);
+
+CREATE TABLE administrators (
+  id INTEGER PRIMARY KEY,
+  jid VARCHAR UNIQUE NOT NULL
+);

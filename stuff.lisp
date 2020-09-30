@@ -2,6 +2,11 @@
 
 (defparameter +version+ "0.0.1")
 
+(defvar *archiving-enabled* nil
+  "T if archiving user messages is enabled, NIL otherwise")
+(defvar *history-fetches-enabled* nil
+  "T if full history fetches are enabled, NIL otherwise")
+
 (defclass whatsxmpp-component (xmpp-component)
   ((whatsapps
     :initform (make-hash-table :test 'equal)
@@ -94,13 +99,21 @@
   "** whatsxmpp, version ~A, a theta.eu.org project **
 Commands:
 - register: set up the bridge
+- unregister: log out of the bridge and wipe all bridge data (!)
 - connect: manually connect to WhatsApp
 - stop: disconnect from WhatsApp, and disable automatic reconnections
 - status: get your current status
 - getroster: trigger an XEP-0144 roster item exchange (in some clients, this'll pop up a window asking to add contacts to your roster)
 - help: view this help text
-- refresh-chats: force the bridge to update member lists + subject for all of your group chats"
+- refresh-chats: force the bridge to update member lists + subject for all of your group chats
+- enable-archiving: enable storage of *unencrypted* WhatsApp messages by the bridge
+- disable-archiving: disable the above archiving setting
+- full-history-fetch: fetch ALL historic messages from WhatsApp and store them in the bridge's archive"
   +version+))
+
+(defparameter *admin-privileged-help-text*
+  "You may execute the following additional administrator commands:
+- force-unregister USER: forcibly remove USER from the bridge")
 
 (defparameter *reconnect-every-secs* 5
   "Interval between calls to WA-RESETUP-USERS.")
@@ -377,7 +390,7 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
                      for x-msg in messages
                      do (progn
                           (deliver-xmpp-message comp x-msg)
-                          (when (uiop:string-prefix-p "g" (conversation x-msg))
+                          (when (and *archiving-enabled* (user-archiving-enabled-p uid) (uiop:string-prefix-p "g" (conversation x-msg)))
                             (insert-xmpp-message x-msg))
                           (when (orig-id x-msg)
                             (insert-user-message uid (xmpp-id x-msg) (orig-id x-msg))))))))
@@ -658,14 +671,15 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
               (let* ((new-from (concatenate 'string orig-to "/" muc-resource))
                      (group-localpart (nth-value 1 (parse-jid orig-to)))
                      (recipients (get-user-chat-joined (get-user-id jid) group-localpart)))
-                ;; FIXME: You can break the database's UNIQUE constraint here.
-                (insert-xmpp-message (make-instance 'xmpp-message
-                                                    :conversation group-localpart
-                                                    :uid (get-user-id jid)
-                                                    :from muc-resource
-                                                    :timestamp (local-time:now)
-                                                    :xmpp-id orig-id
-                                                    :body orig-body))
+                (when (and *archiving-enabled* (user-archiving-enabled-p (get-user-id jid)))
+                  ;; FIXME: You can break the database's UNIQUE constraint here.
+                  (insert-xmpp-message (make-instance 'xmpp-message
+                                                      :conversation group-localpart
+                                                      :uid (get-user-id jid)
+                                                      :from muc-resource
+                                                      :timestamp (local-time:now)
+                                                      :xmpp-id orig-id
+                                                      :body orig-body)))
                 (loop
                   for recip in recipients
                   do (with-message (comp recip :from new-from :id orig-id :type "groupchat")
@@ -872,6 +886,18 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                 (admin-msg comp jid "(will retry)")
                 (setf stored-conn nil)))))))))
 
+(defun unregister-user (comp uid)
+  "Unregister the user with id UID from the bridge."
+  (with-component-data-lock (comp)
+    (let* ((user-jid (get-user-jid uid))
+           (current-conn (gethash user-jid (component-whatsapps comp))))
+      (db-unregister-user uid)
+      (when current-conn
+        (ignore-errors
+         (whatscl::close-connection current-conn)))
+      (remhash user-jid (component-whatsapps comp))
+      (admin-msg comp user-jid "You have been unregistered from the bridge, and all data has been deleted. Have a nice day!"))))
+
 (defun start-user-registration (comp jid)
   "Register the JID as wanting to use the bridge COMP."
   (with-component-data-lock (comp)
@@ -941,10 +967,31 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
           (and (not uid) (equal body "register"))
           (and uid (equal body "register -force")))
          (start-user-registration comp stripped))
+        ((equal body "unregister")
+         (reply "Are you sure? Unregistering will delete ALL information the bridge has about you, and is not reversible. If you still want to continue, execute the `unregister -force` command."))
+        ((equal body "unregister -force")
+         (if uid
+             (unregister-user comp uid)
+             (reply "You're not registered with the bridge.")))
         ((equal body "help")
-         (reply *admin-help-text*))
+         (progn
+           (reply *admin-help-text*)
+           (when (jid-admin-p stripped)
+             (reply *admin-privileged-help-text*))))
         ((not uid)
          (reply "You're not registered with this bridge. Try `register` or `help`."))
+        ((equal body "enable-archiving")
+         (reply "Are you sure you want to enable archiving? Doing this will store your WhatsApp messages, *unencrypted*, on the server of the bridge operator, where they can be easily read! If you still want to continue, execute the `enable-archiving -force` command."))
+        ((equal body "enable-archiving -force")
+         (if *archiving-enabled*
+             (progn
+               (user-set-archiving-state uid t)
+               (reply "Archiving enabled."))
+             (reply "Archiving cannot be enabled on this bridge. Please contact the bridge administrator.")))
+        ((equal body "disable-archiving")
+         (progn
+           (user-set-archiving-state uid nil)
+           (reply "Archiving disabled. WARNING: Message history is not cleared. To do that, unregister from the bridge entirely (deleting all data), and re-register.")))
         ((equal body "getroster")
          (progn
            (do-roster-exchange comp stripped uid)
@@ -960,21 +1007,23 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
            (when conn
              (whatscl::close-connection conn))))
         ((equal body "full-history-fetch")
-         (let ((conn (gethash stripped (component-whatsapps comp))))
-           (if conn
-               (let ((chats (get-user-groupchats uid)))
-                 (reply (format nil "Fetching full chat history for ~A groupchats. This will probably take a long time.~%Note that even after completion is reported, some background media uploading may be in progress.~%If the WhatsApp connection is interrupted midway through the fetch, you will need to retry the fetch."
-                                (length chats)))
-                 (bt:make-thread
-                  (lambda ()
-                    (loop
-                      for (localpart . subject) in chats
-                      do (progn
-                           (with-wa-handler-context (comp conn stripped)
-                             (do-chat-history-request comp conn stripped uid (whatsxmpp-localpart-to-wa-jid localpart)))
-                           (sleep 0.1))))
-                  :name "whatsxmpp chat history fetcher"))
-               (reply "You're not connected to WhatsApp."))))
+         (if *history-fetches-enabled*
+             (let ((conn (gethash stripped (component-whatsapps comp))))
+               (if conn
+                   (let ((chats (get-user-groupchats uid)))
+                     (reply (format nil "Fetching full chat history for ~A groupchats. This will probably take a long time.~%Note that even after completion is reported, some background media uploading may be in progress.~%If the WhatsApp connection is interrupted midway through the fetch, you will need to retry the fetch."
+                                    (length chats)))
+                     (bt:make-thread
+                      (lambda ()
+                        (loop
+                          for (localpart . subject) in chats
+                          do (progn
+                               (with-wa-handler-context (comp conn stripped)
+                                 (do-chat-history-request comp conn stripped uid (whatsxmpp-localpart-to-wa-jid localpart)))
+                               (sleep 0.1))))
+                      :name "whatsxmpp chat history fetcher"))
+                   (reply "You're not connected to WhatsApp.")))
+             (reply "Full history fetching is not enabled for this bridge. Please contact the bridge administrator.")))
         ((equal body "refresh-chats")
          (let ((conn (gethash stripped (component-whatsapps comp))))
            (if conn
@@ -993,6 +1042,16 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                  (reply (format nil "Refreshing metadata for ~A..." localpart-to-use))
                  (request-wa-chat-metadata comp conn stripped localpart-to-use))
                (reply "You're not connected to WhatsApp."))))
+        ((uiop:string-prefix-p "force-unregister " body)
+         (let ((jid-to-use (subseq body #.(length "force-unregister "))))
+           (if (jid-admin-p stripped)
+               (let ((uid-to-use (get-user-id jid-to-use)))
+                 (if uid-to-use
+                     (progn
+                       (unregister-user comp uid-to-use)
+                       (reply "User unregistered and data deleted."))
+                     (reply "That user couldn't be found.")))
+               (reply "You are not a bridge administrator."))))
         (t
          (reply "Unknown command. Try `help` for a list of supported commands."))))))
 
@@ -1363,13 +1422,19 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
   "Initialise the whatsxmpp bridge."
   (connect-database)
   (with-prepared-statement
-      (config "SELECT server, port, component_name, shared_secret, upload_component_name FROM configuration WHERE rev = 1")
+      (config "SELECT server, port, component_name, shared_secret, upload_component_name, allow_archiving, allow_history_fetches FROM configuration WHERE rev = 1")
     (assert (sqlite:step-statement config) () "No configuration in database!")
-    (destructuring-bind (server port component-name shared-secret upload-name)
+    (destructuring-bind (server port component-name shared-secret upload-name allow-archiving allow-history-fetches)
         (column-values config)
       (let* ((comp (make-component server port shared-secret component-name))
              (ret (change-class comp 'whatsxmpp-component
                                 :upload-component-name upload-name)))
+        (setf *archiving-enabled* (not (eql allow-archiving 0)))
+        (when *archiving-enabled*
+          (format *debug-io* "~&[!] WARNING: Archiving of user messages is enabled. If you're running a public bridge, this has potential privacy implications!~%"))
+        (setf *history-fetches-enabled* (not (eql allow-history-fetches 0)))
+        (when *history-fetches-enabled*
+          (format *debug-io* "~&[!] WARNING: Full history fetches are enabled. Letting any user initiate a full history fetch is a potential Denial of Service vector!~%"))
         (on :text-message ret (lambda (&rest args)
                                 (apply #'whatsxmpp-message-handler ret args)))
         (on :message-marker ret (lambda (&rest args)
