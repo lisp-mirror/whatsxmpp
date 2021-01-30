@@ -74,7 +74,7 @@ FIXME: the above behaviour is a bit meh."
                                    ;; whee fallback go brrr
                                    participant-localpart)))
                (values wx-localpart from-resource))
-             (error "Couldn't find or create group chat for ~A" chat-id)))))))
+             (error "Couldn't find or create group chat for ~A" wx-localpart)))))))
 
 (defmacro with-new-xmpp-message-context ((comp jid msg &optional conn) &body body)
   "Evaluate FORMS, binding NEW-XMPP-MESSAGE (lambda-list (BODY &KEY OOB-URL SYSTEM-GENERATED)) to a function that returns an instance of the XMPP-MESSAGE class, using information contained in the message MSG received for the bridge user JID."

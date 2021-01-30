@@ -596,7 +596,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
         (handle-wa-contact-presence-subscriptions comp jid wx-localpart))
       (return-from add-wa-chat))
     (unless (uiop:string-prefix-p "g" wx-localpart)
-      (warn "Interesting localpart pased to ADD-WA-CHAT: ~A" wx-localpart)
+      (warn "Interesting localpart passed to ADD-WA-CHAT: ~A" wx-localpart)
       (return-from add-wa-chat))
     (assert uid () "No user ID for ~A!" jid)
     (unless (get-user-chat-id uid wx-localpart)
