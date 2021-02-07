@@ -11,6 +11,9 @@
   ((whatsapps
     :initform (make-hash-table :test 'equal)
     :accessor component-whatsapps)
+   (presence-timers
+    :initform (make-hash-table :test 'equal)
+    :accessor component-presence-timers)
    (reconnect-timer
     :initform nil
     :accessor component-reconnect-timer)
@@ -139,6 +142,14 @@ Commands:
              (loop
                for jid being the hash-keys in (component-whatsapps comp)
                  using (hash-value conn)
+               do (when conn
+                    (symbol-macrolet
+                        ((ticks (gethash jid (component-presence-timers comp))))
+                      (unless ticks
+                        (setf ticks 0))
+                      (when (> (incf ticks) #.(/ (* 60 60) 5))
+                        (format *debug-io* "~&periodic presence available for ~A~%" jid)
+                        (whatscl::send-presence conn :available))))
                append (unless conn
                         (list jid))))
            (num-users (length users-to-reconnect)))
@@ -1219,6 +1230,11 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                                   :stanza-type "presence"
                                   :id id :to from :from to
                                   :e e))))
+          ((and uid (string-equal type "available"))
+           (let ((conn (gethash stripped (component-whatsapps comp))))
+             (when conn
+               (format *debug-io* "~&sending available presence for ~A~%" stripped)
+               (whatscl::send-presence conn :available))))
           (t nil))))))
 
 (defun whatsxmpp-presence-probe-handler (comp &key from to id &allow-other-keys)
