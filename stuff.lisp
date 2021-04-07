@@ -148,8 +148,9 @@ Commands:
                       (unless ticks
                         (setf ticks 0))
                       (when (> (incf ticks) #.(/ (* 60 60) 5))
-                        (format *debug-io* "~&periodic presence available for ~A~%" jid)
-                        (whatscl::send-presence conn :available))))
+                        ;; Used to send a presence timer here; currently
+                        ;; not used.
+                        (setf ticks 0))))
                append (unless conn
                         (list jid))))
            (num-users (length users-to-reconnect)))
@@ -243,12 +244,16 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
       (update-session-data jid sessdata)
       (admin-msg comp jid status)
       (admin-presence comp jid status)
-      (whatscl::send-presence conn :available)
+      ;; Don't send available presence here, because it causes WA to wake
+      ;; up. This is allegedly bad on iOS, for example, and drains the
+      ;; battery on all devices nevertheless.
+      ;;
+      ;; (whatscl::send-presence conn :available)
       (format *debug-io* "~&ws-connected: ~A (as ~A)~%" jid wa-jid))))
 
 (defun wa-handle-disconnect (comp conn jid kind)
   (with-wa-handler-context (comp conn jid)
-    (format *debug-io* "~&disconnect for ~A: ~A" jid kind)
+    (format *debug-io* "~&disconnect for ~A: ~A~%" jid kind)
     (let ((reason
             (case kind
               (:replaced "Connection replaced by other WhatsApp Web session")
@@ -257,6 +262,11 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
       (admin-presence comp jid reason "xa"))
     (admin-msg comp jid "(Disabling automatic reconnections.)")
     (remhash jid (component-whatsapps comp))))
+
+(defun wa-handle-stream-asleep (comp conn jid)
+  (with-wa-handler-context (comp conn jid)
+    (format *debug-io* "~&stream asleep for ~A~%" jid)
+    (admin-presence comp jid "Phone sleeping" "away")))
 
 (defun wa-handle-error-status-code (comp conn jid err)
   (with-wa-handler-context (comp conn jid)
@@ -848,6 +858,7 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
   (on :message conn (lambda (msg dt) (wa-handle-message comp conn jid msg dt)))
   (on :contacts conn (lambda (contacts) (wa-handle-contacts comp conn jid contacts)))
   (on :chats conn (lambda (chats) (wa-handle-chats comp conn jid chats)))
+;;  (on :stream-asleep conn (lambda () (wa-handle-stream-asleep comp conn jid)))
   (on :contact conn (lambda (contact) (wa-handle-contact comp conn jid contact)))
   (on :message-ack conn (lambda (&key id ack from to participant &allow-other-keys)
                           (wa-handle-message-ack comp conn jid
@@ -1230,11 +1241,13 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                                   :stanza-type "presence"
                                   :id id :to from :from to
                                   :e e))))
-          ((and uid (string-equal type "available"))
-           (let ((conn (gethash stripped (component-whatsapps comp))))
-             (when conn
-               (format *debug-io* "~&sending available presence for ~A~%" stripped)
-               (whatscl::send-presence conn :available))))
+          ;; Only map chat states to WA presence, not actual XMPP presence.
+          ;; Presence wakes up the device; this is bad.
+;;          ((and uid (string-equal type "available"))
+;;           (let ((conn (gethash stripped (component-whatsapps comp))))
+;;             (when conn
+;;               (format *debug-io* "~&sending available presence for ~A~%" stripped)
+;;               (whatscl::send-presence conn :available))))
           (t nil))))))
 
 (defun whatsxmpp-presence-probe-handler (comp &key from to id &allow-other-keys)
