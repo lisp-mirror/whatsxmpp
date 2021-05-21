@@ -1,6 +1,5 @@
 # whatsxmpp
 
-[![GNU AGPLv3 licensed](https://www.gnu.org/graphics/agplv3-155x51.png)](https://www.gnu.org/licenses/agpl-3.0.en.html)
 [![XMPP chatroom: whatsxmpp@conf.theta.eu.org](https://inverse.chat/badge.svg?room=whatsxmpp@conf.theta.eu.org)](xmpp:whatsxmpp@conf.theta.eu.org?join)
 ![Maintenance](https://img.shields.io/maintenance/yes/2020.svg)
 
@@ -169,3 +168,7 @@ to pop up a window where you can insert all your WhatsApp contacts in one go!
 
 Come join us in [whatsxmpp@conf.theta.eu.org](xmpp:whatsxmpp@conf.theta.eu.org?join) if you
 have questions or issues using the bridge.
+
+## License
+
+MIT
