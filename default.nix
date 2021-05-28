@@ -5,7 +5,7 @@ with depot.third_party.lisp;
 let
   lispPkgs = rec {
     event-emitter = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "fukamachi";
         repo = "event-emitter";
         rev = "cb0e15f9de4c617cef3f5d5a22a41e28f9613d0b";
@@ -19,7 +19,7 @@ let
       ];
     };
     metabang-bind = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "gwkkwg";
         repo = "metabang-bind";
         rev = "9ab6e64a30261df109549d21ee7940df87db66bb";
@@ -36,7 +36,7 @@ let
       ];
     };
     qbase64 = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "chaitanyagupta";
         repo = "qbase64";
         rev = "6374899aec189600e6b7b77c89009d0835154b93";
@@ -53,7 +53,7 @@ let
       ];
     };
     com-google-base = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "brown";
         repo = "base";
         rev = "498fd7224748a1cceaa6127edcedab6e3563aa84";
@@ -72,7 +72,7 @@ let
         "sequence.lisp"
       ];
     };
-    protobuf-src = depot.third_party.fetchFromGitHub {
+    protobuf-src = pkgs.fetchFromGitHub {
       owner = "brown";
       repo = "protobuf";
       rev = "f55c6f51848ff1f9d523fb293fbe99c076a34a95";
@@ -235,7 +235,7 @@ let
       ];
     };
     quri = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "fukamachi";
         repo = "quri";
         rev = "b39ec54a07062334cfa37b31d14e39115921ffe0";
@@ -275,7 +275,7 @@ let
       srcs = [ mime-types-lisp ];
     };
     cl-sqlite = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "TeMPOraL";
         repo = "cl-sqlite";
         rev = "be2fcc193f98e3d5bdc85958a806d612cc48740c";
@@ -292,7 +292,7 @@ let
       ];
     };
     fast-websocket = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "fukamachi";
         repo = "fast-websocket";
         rev = "7087d9cf4c3f7da4c68a275ad79eda853ac6f1b9";
@@ -312,7 +312,7 @@ let
       ];
     };
     fast-io = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "rpav";
         repo = "fast-io";
         rev = "603f4903dd74fb221859da7058ae6ca3853fe64b";
@@ -329,7 +329,7 @@ let
       ];
     };
     proc-parse = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "fukamachi";
         repo = "proc-parse";
         rev = "3afe2b76f42f481f44a0a495256f7abeb69cef27";
@@ -343,7 +343,7 @@ let
       ];
     };
     xsubseq = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "fukamachi";
         repo = "xsubseq";
         rev = "5ce430b3da5cda3a73b9cf5cee4df2843034422b";
@@ -357,7 +357,7 @@ let
       ];
     };
     uuid = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "dardoria";
         repo = "uuid";
         rev = "f0052f34a006ec995086aa3b2e42182a178fe228";
@@ -371,7 +371,7 @@ let
       ];
     };
     smart-buffer = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "fukamachi";
         repo = "smart-buffer";
         rev = "09b9a9a0b3abaa37abe9a730f5aac2643dca4e62";
@@ -385,7 +385,7 @@ let
       ];
     };
     fast-http = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "fukamachi";
         repo = "fast-http";
         rev = "502a37715dcb8544cc8528b78143a942de662c5a";
@@ -404,7 +404,7 @@ let
         "fast-http.lisp"
       ];
     };
-    wsd-src = depot.third_party.fetchFromGitHub {
+    wsd-src = pkgs.fetchFromGitHub {
       owner = "eeeeeta";
       repo = "websocket-driver";
       rev = "03fdb0684c50fe77cf186d208c671bd9a1575985";
@@ -428,7 +428,7 @@ let
       ];
     };
     closure-common = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "sharplispers";
         repo = "closure-common";
         rev = "e3c5f5f454b72b01b89115e581c3c52a7e201e5c";
@@ -453,7 +453,7 @@ let
       ];
     };
     cxml = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "sharplispers";
         repo = "cxml";
         rev = "8701da08ba4aac30891b8d2005edb018c1d3d796";
@@ -492,7 +492,7 @@ let
       ];
     };
     cl-qrencode = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "jnjcc";
         repo = "cl-qrencode";
         rev = "0de2d8a3877b499a9a0bbb0a9e1247056ae4311e";
@@ -519,7 +519,7 @@ let
       ];
     };
     vom = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "orthecreedence";
         repo = "vom";
         rev = "1aeafeb5b74c53741b79497e0ef4acf85c92ff24";
@@ -533,7 +533,7 @@ let
       ];
     };
     blackbird = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "orthecreedence";
         repo = "blackbird";
         rev = "d361f81c1411dec07f6c2dcb11c78f7aea9aaca8";
@@ -550,7 +550,7 @@ let
       ];
     };
     com-gigamonkeys-binary-data = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "gigamonkey";
         repo = "monkeylib-binary-data";
         rev = "22e908976d7f3e2318b7168909f911b4a00963ee";
@@ -566,7 +566,7 @@ let
       ];
     };
     ieee-floats = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "marijnh";
         repo = "ieee-floats";
         rev = "566b51a005e81ff618554b9b2f0b795d3b29398d";
@@ -580,7 +580,7 @@ let
       ];
     };
     cl-jpeg = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "sharplispers";
         repo = "cl-jpeg";
         rev = "ec557038128df6895fbfb743bfe8faf8ec2534af";
@@ -596,7 +596,7 @@ let
       ];
     };
     deflate = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "pmai";
         repo = "deflate";
         rev = "fb940e63b89a6c4d168153dbf046552e106eb8a5";
@@ -610,7 +610,7 @@ let
       ];
     };
     trivial-features = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "trivial-features";
         repo = "trivial-features";
         rev = "e7bb968d1e0b00aaf06e0671a866a81dbfe99bee";
@@ -624,7 +624,7 @@ let
       ];
     };
     opticl-core = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "slyrus";
         repo = "opticl-core";
         rev = "b7cd13d26df6b824b216fbc360dc27bfadf04999";
@@ -639,7 +639,7 @@ let
       ];
     };
     retrospectiff = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "slyrus";
         repo = "retrospectiff";
         rev = "c2a69d77d5010f8cdd9045b3e36a08a73da5d321";
@@ -667,7 +667,7 @@ let
       ];
     };
     cl-tga = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "fisxoj";
         repo = "cl-tga";
         rev = "4dc2f7b8a259b9360862306640a07a23d4afaacc";
@@ -682,7 +682,7 @@ let
       ];
     };
     mmap = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "Shinmera";
         repo = "mmap";
         rev = "ba2e98c67e25f0fb8ff838238561120a23903ce7";
@@ -698,7 +698,7 @@ let
       ];
     };
     static-vectors = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "sionescu";
         repo = "static-vectors";
         rev = "67f2ed0da2244f3c2a69d3440eddcc14a3ad33f0";
@@ -716,7 +716,7 @@ let
       ];
     };
     swap-bytes = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "sionescu";
         repo = "swap-bytes";
         rev = "253ab928b91b8a1c3cea0434e87b8da5ce3c6014";
@@ -735,7 +735,7 @@ let
       ];
     };
     threebz = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "3b";
         repo = "3bz";
         rev = "d6119083b5e0b0a6dd3abc2877936c51f3f3deed";
@@ -763,7 +763,7 @@ let
       ];
     };
     pngload = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "bufferswap";
         repo = "pngload";
         rev = "b2e56733dd5d86a56b20c665676b86e566b4e223";
@@ -790,7 +790,7 @@ let
       ];
     };
     opticl = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "slyrus";
         repo = "opticl";
         rev = "438881ae779fa4b113308a3c5c96783fd9618e02";
@@ -823,7 +823,7 @@ let
       ];
     };
     nibbles = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "sharplispers";
         repo = "nibbles";
         rev = "2b99f103f84f0a6dcbc8212f7763d6b08b13e3fa";
@@ -845,7 +845,7 @@ let
       ];
     };
     ironclad = let
-      src = depot.third_party.fetchFromGitHub {
+      src = pkgs.fetchFromGitHub {
         owner = "sharplispers";
         repo = "ironclad";
         rev = "c3aa33080621abc10fdb0f34acc4655cc4e982a6";
@@ -991,5 +991,6 @@ buildLisp.program {
     "message.lisp"
     "stuff.lisp"
   ];
+  extraInit = "(sb-ext:restrict-compiler-policy 'safety 3 3)";
   main = "whatsxmpp::main";
 }
