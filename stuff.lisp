@@ -1516,6 +1516,9 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
   (let ((*default-database-path* (elt sb-ext:*posix-argv* 1)))
     (format t "[*] whatsxmpp version ~A / an eta project <https://theta.eu.org>~%" +version+)
     (format t "[+] Using database at ~A~%" *default-database-path*)
+    (when (uiop:getenv "WXDEBUG")
+      (format t "[*] Enabling whatscl debug logging~%")
+      (setf whatscl::*whatscl-debug-stream* *debug-io*))
     #+use-swank
     (block nil
       (format t "[+] Starting SWANK server~%")
