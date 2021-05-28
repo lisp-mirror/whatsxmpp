@@ -1,5 +1,6 @@
 *.fasl
 Dockerfile
+Dockerfile.new
 whatsxmpp
 *~
 *.sqlite*
