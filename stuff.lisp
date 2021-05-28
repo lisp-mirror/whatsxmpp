@@ -967,14 +967,20 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                                            "@"
                                            (component-name comp)))
                       (ct-name (get-contact-name uid ct-localpart
-                                                 :no-phone-number t)))
+                                                 :no-phone-number t))
+                      (groupchat-subjects
+                        (get-contact-chat-subjects uid ct-localpart)))
                  (when ct-name
                    (cxml:with-element "item"
                      (cxml:attribute "action" "add")
                      (cxml:attribute "jid" ct-jid)
                      (cxml:attribute "name" ct-name)
                      (cxml:with-element "group"
-                       (cxml:text "WhatsApp")))))))))))
+                       (cxml:text "WhatsApp"))
+                     (dolist (subj groupchat-subjects)
+                       (cxml:with-element "group"
+                         (cxml:text
+                          (format nil "WA: ~A" subj)))))))))))))
 
 (defun handle-admin-command (comp from body uid)
   "Handles an admin command sent to COMP."

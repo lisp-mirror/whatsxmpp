@@ -151,6 +151,15 @@
       while (sqlite:step-statement get-stmt)
       collect (with-bound-columns (localpart subject) get-stmt (cons localpart subject)))))
 
+(defun get-contact-chat-subjects (uid wa-jid)
+  "Get a list of chat subjects for each chat the remote contact identifed by WA-JID is in, for the user with ID UID."
+  (with-prepared-statements
+      ((get-stmt "SELECT DISTINCT user_chats.subject FROM user_chats, user_chat_members WHERE user_chats.id = user_chat_members.chat_id AND user_chat_members.wa_jid = ? AND user_chats.user_id = ?"))
+    (bind-parameters get-stmt wa-jid uid)
+    (loop
+      while (sqlite:step-statement get-stmt)
+      collect (with-bound-columns (subject) get-stmt subject))))
+
 (defun insert-xmpp-message (xm)
   "Inserts XM, a groupchat XMPP-MESSAGE, into the database."
   (assert (uiop:string-prefix-p "g" (conversation xm)) () "Tried to insert XMPP message for non-groupchat conversation ~A" (conversation xm))
