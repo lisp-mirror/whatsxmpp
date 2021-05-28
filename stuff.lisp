@@ -578,34 +578,41 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
                                (lambda (conn meta)
                                  (wa-handle-group-metadata comp conn jid wx-localpart meta))))
 
-(defun handle-wa-chat-invitation (comp conn jid uid localpart &key noretry)
-  "Checks to see whether the group chat LOCALPART has any metadata; if not, requests some. If it does, and the user hasn't been invited to that group chat yet, send them an invitation."
+(defun handle-wa-chat-invitation (comp conn jid uid localpart &key noretry use-join-count)
+  "Checks to see whether the group chat LOCALPART has any metadata; if not, requests some. If it does, and the user hasn't been invited to that group chat yet, send them an invitation.
+If USE-JOIN-COUNT is set, checks whether the user is in the groupchat and invites them if they aren't, instead of checking whether the bridge has invited them previously."
   (unless (uiop:string-prefix-p "g" localpart)
     (return-from handle-wa-chat-invitation))
   (with-prepared-statements
       ((get-stmt "SELECT id, invitation_state FROM user_chats WHERE user_id = ? AND wa_jid = ?")
        (count-stmt "SELECT COUNT(*) FROM user_chat_members WHERE chat_id = ?")
+       (count-joined-stmt "SELECT COUNT(*) FROM user_chat_joined WHERE chat_id = ?")
        (update-stmt "UPDATE user_chats SET invitation_state = ? WHERE id = ?"))
     (bind-parameters get-stmt uid localpart)
     (assert (sqlite:step-statement get-stmt) ()
             "Chat ~A doesn't exist in database!" localpart)
     (with-bound-columns (chat-id invitation-state) get-stmt
       (bind-parameters count-stmt chat-id)
+      (bind-parameters count-joined-stmt chat-id)
       (assert (sqlite:step-statement count-stmt))
+      (assert (sqlite:step-statement count-joined-stmt))
       (with-bound-columns (n-members) count-stmt
-        (if (> n-members 0)
-            (when (equal invitation-state "none")
-              (with-message (comp jid)
-                (cxml:with-element "x"
-                  (cxml:attribute "xmlns" +muc-invite-ns+)
-                  (cxml:attribute "jid" (concatenate 'string
-                                                     localpart
-                                                     "@"
-                                                     (component-name comp)))))
-              (bind-parameters update-stmt "invited" chat-id)
-              (sqlite:step-statement update-stmt))
-            (unless noretry
-              (request-wa-chat-metadata comp conn jid localpart)))))))
+        (with-bound-columns (n-joined) count-joined-stmt
+          (if (> n-members 0)
+              (when (or
+                     (and use-join-count (eql n-joined 0))
+                     (equal invitation-state "none"))
+                (with-message (comp jid)
+                  (cxml:with-element "x"
+                    (cxml:attribute "xmlns" +muc-invite-ns+)
+                    (cxml:attribute "jid" (concatenate 'string
+                                                       localpart
+                                                       "@"
+                                                       (component-name comp)))))
+                (bind-parameters update-stmt "invited" chat-id)
+                (sqlite:step-statement update-stmt))
+              (unless noretry
+                (request-wa-chat-metadata comp conn jid localpart))))))))
 
 (defun add-wa-chat (comp conn jid ct-jid)
   "Adds the JID CT-JID to the list of the user's groupchats, if it is a groupchat. If it's a user JID, sends a presence subscription request if necessary."

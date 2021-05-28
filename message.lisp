@@ -159,6 +159,12 @@ FIXME: the above behaviour is a bit meh."
          (from (if one-to-one-p
                    (concatenate 'string (from msg) "@" component-host "/whatsapp")
                    (concatenate 'string (conversation msg) "@" component-host "/" (from msg)))))
+    (when (and (not one-to-one-p)
+               (eql (length destinations) 0))
+      (warn "User ~A not in groupchat ~A; inviting due to new message"
+            jid (conversation msg))
+      (handle-wa-chat-invitation comp nil jid (uid msg) (conversation msg)
+                                 :use-join-count t))
     (loop
       for to in destinations
       do (with-message (comp to
