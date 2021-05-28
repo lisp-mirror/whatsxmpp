@@ -1538,6 +1538,9 @@ Returns three values: avatar data (as two values), and a generalized boolean spe
         (bt:with-lock-held (lock)
           (bt:condition-wait condvar lock))))))
 
+(setf whatscl::*default-long-desc*
+      (concatenate 'string "whatsxmpp (" (lisp-implementation-type) ")"))
+
 #+use-swank
 (uiop:register-image-dump-hook
  (lambda ()
