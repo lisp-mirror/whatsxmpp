@@ -396,6 +396,33 @@ WhatsXMPP represents users as u440123456789 and groups as g1234-5678."
    :sleep-secs 0.2
    :chunk-size 100))
 
+(defun translate-call-offer-type (ty)
+  (when ty
+    (cond
+      ((string= ty "offer") "audio")
+      ((string= ty "offer_video") "video")
+      (t nil))))
+
+(defun wa-handle-call (comp conn jid payload)
+  (with-wa-handler-context (comp conn jid)
+    (let* ((wa-jid (whatscl::cassoc :from payload))
+           (orig-type (whatscl::cassoc :type payload))
+           (offer-type (translate-call-offer-type orig-type))
+           (offer-data (whatscl::cassoc :data payload)))
+      (format *debug-io* "~%call type ~A from ~A for ~A (has data: ~A)~%"
+              orig-type wa-jid jid (not (not offer-data)))
+      (when (and (not offer-data) offer-type wa-jid)
+        (let ((from
+                (concatenate 'string
+                             (wa-jid-to-whatsxmpp-localpart
+                              (whatscl::parse-jid wa-jid))
+                             "@"
+                             (component-name comp))))
+          (send-text-message comp jid
+                             (format nil "/me started a WhatsApp ~A call (pick up on your phone!)~%"
+                                     offer-type)
+                             from))))))
+
 (defun wa-handle-message (comp conn jid msg delivery-type)
   (declare (ignore delivery-type))
   (with-wa-handler-context (comp conn jid)
@@ -876,6 +903,8 @@ If USE-JOIN-COUNT is set, checks whether the user is in the groupchat and invite
 
   (on :status-change conn (lambda (for-jid status)
                              (wa-handle-status-change comp conn jid for-jid status)))
+  (on :call conn (lambda (payload)
+                   (wa-handle-call comp conn jid payload)))
   (on :presence conn (lambda (&key of type participant &allow-other-keys)
                        (wa-handle-presence comp conn jid
                                            :for-jid of :type type
