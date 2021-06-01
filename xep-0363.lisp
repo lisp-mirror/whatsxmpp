@@ -26,6 +26,6 @@
                 (when (equal name "header")
                   (setf headers (cons
                                  (cons (dom:get-attribute node "name")
-                                       (dom:node-value (elt (child-elements node) 0)))
+                                       (get-node-text node))
                                  headers)))))
          `((,(dom:get-attribute put-node "url") . ,headers) ,(dom:get-attribute get-node "url")))))))
